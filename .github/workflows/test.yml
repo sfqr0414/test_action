@@ -1,0 +1,54 @@
+name: Test workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      prop: { required: true, default: 'none', type: string }
+
+jobs:
+  build-and-upload-image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+    steps:
+      - name: Get more disk space
+        run: |
+          sudo rm -rf /home/runner/actions-runner/cached/_diag/* || true
+          sudo rm -rf /home/runner/_diag/* || true
+          sudo docker system prune -a -f || true
+          sudo apt-get clean
+          sudo apt-get autoremove -y --purge
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost || true
+          sudo rm -rf /var/lib/apt/lists/* || true
+          sudo rm -rf ${{ github.workspace }}/build/* ${{ github.workspace }}/images/* || true
+          sudo rm -rf /tmp/* /var/tmp/* || true
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          # 如需拉取子模块（如有）请启用
+          # submodules: recursive
+          fetch-depth: 0
+
+      - name: Check Disk Space
+        run: |
+           df -h
+        shell: bash
+
+      - name: Test Add File to mnt
+        run: |
+           ls /mnt
+           touch /mnt/testfile
+           ls /mnt
+        shell: bash
+
+      - name: Install Build Dependencies
+        if: false
+        run: |
+          sudo apt update -y >/dev/null 2>&1
+          sudo apt install -y --no-install-recommends \
+            git build-essential curl wget unzip zip \
+            qemu-user-static binfmt-support python3 python3-pip \
+            rsync bc bison flex libssl-dev parted dosfstools \
+            squashfs-tools imagemagick jq zstd
+
