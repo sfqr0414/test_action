@@ -9,7 +9,6 @@ jobs:
   build-and-upload-image:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
-    env:
     steps:
       - name: Get more disk space
         run: |
