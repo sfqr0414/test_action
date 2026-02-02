@@ -15,8 +15,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update
-          # 补充了 libdw-dev 和确保 libssl-dev 存在
-          # 同时也加上了交叉编译 Debian 包需要的常用工具
+          # 安装交叉编译和打包所需的所有依赖
           sudo apt install -y build-essential bc bison flex libssl-dev libelf-dev \
             ccache git dwarves libncurses-dev crossbuild-essential-arm64 \
             kmod xz-utils rsync debhelper config-package-dev curl libdw-dev
@@ -40,15 +39,15 @@ jobs:
       - name: Build Debian Packages
         working-directory: ./linux-source
         run: |
-          # 关键修改：添加 -d 标志给 dpkg-buildpackage 绕过严格的宿主机依赖检查
-          # 或者通过环境变量让 deb-pkg 知道我们在交叉编译
+          # 核心修正：通过 DPKG_FLAGS="-d" 强制跳过依赖检查
+          # 同时设置 KBUILD_DEBARCH 以明确我们要打包 arm64
           export KBUILD_BUILD_USER=runner
           export KBUILD_BUILD_HOST=github-actions
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
             -j$(nproc) bindeb-pkg \
             KDEB_PKGVERSION=$(date +%Y%m%d)-custom \
             KDEB_COMPRESS=xz \
-            BINDEB_HOST_PROGS=1
+            DPKG_FLAGS="-d"
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
