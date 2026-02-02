@@ -1,4 +1,4 @@
-name: Build Mainline Kernel 6.19+
+name: Build Mainline Kernel 6.19+ (Armbian Edge Config)
 
 on:
   workflow_dispatch:
@@ -15,7 +15,6 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update
-          # 安装交叉编译和打包所需的所有依赖
           sudo apt install -y build-essential bc bison flex libssl-dev libelf-dev \
             ccache git dwarves libncurses-dev crossbuild-essential-arm64 \
             kmod xz-utils rsync debhelper config-package-dev curl libdw-dev
@@ -24,34 +23,50 @@ jobs:
         run: |
           git clone --depth 1 https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git linux-source
 
-      - name: Configure Kernel
+      - name: Fetch Armbian Edge Config
         working-directory: ./linux-source
         run: |
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
+          # 下载 Armbian 为 Rockchip64 准备的最新 Edge 配置作为蓝本
+          curl -sLo .config https://raw.githubusercontent.com/armbian/build/main/config/kernel/linux-rockchip64-edge.config
+          echo "Armbian config downloaded."
+
+      - name: Inject Custom Configurations (Rocket NPU & DKMS)
+        working-directory: ./linux-source
+        run: |
+          # 1. 基础转换：确保配置适配当前内核版本
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+
+          # 2. 注入 Rocket NPU 驱动支持
           ./scripts/config --enable CONFIG_DRM_ACCEL_ROCKET
+          
+          # 3. 增强 DKMS 兼容性 (魔改 WiFi 驱动必备)
           ./scripts/config --enable CONFIG_MODVERSIONS
+          ./scripts/config --enable CONFIG_MODULE_SRCVERSION_ALL
+          
+          # 4. 裁剪优化：关闭繁重的调试符号以节省磁盘空间和编译时间
           ./scripts/config --disable CONFIG_DEBUG_INFO
           ./scripts/config --disable CONFIG_DEBUG_INFO_BTF
           ./scripts/config --disable CONFIG_DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT
           ./scripts/config --set-str CONFIG_LOCALVERSION "-rockchip-mainline"
+
+          # 5. 再次整理并静默确认
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
 
       - name: Build Debian Packages
         working-directory: ./linux-source
         run: |
-          # 核心修正：通过 DPKG_FLAGS="-d" 强制跳过依赖检查
-          # 同时设置 KBUILD_DEBARCH 以明确我们要打包 arm64
           export KBUILD_BUILD_USER=runner
           export KBUILD_BUILD_HOST=github-actions
+          # 使用 DPKG_FLAGS="-d" 绕过宿主机依赖检查
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
             -j$(nproc) bindeb-pkg \
-            KDEB_PKGVERSION=$(date +%Y%m%d)-custom \
+            KDEB_PKGVERSION=$(date +%Y%m%d)-armbian-edge \
             KDEB_COMPRESS=xz \
             DPKG_FLAGS="-d"
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: linux-kernel-6.19-plus
+          name: linux-kernel-6.19-armbian-edge
           path: ./*.deb
           retention-days: 0
