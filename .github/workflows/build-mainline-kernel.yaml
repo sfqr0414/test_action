@@ -1,64 +1,58 @@
 name: Build Mainline Kernel 6.19+
 
 on:
-  workflow_dispatch: # 手动触发
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      - name: Free Disk Space (Critical for Kernel Build)
+      - name: Free Disk Space
         run: |
           sudo docker image prune -a -f
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell /usr/share/swift
-          # 这样可以腾出约 15GB+ 空间
-
+          
       - name: Install dependencies
         run: |
           sudo apt update
+          # 补充了 libdw-dev 和确保 libssl-dev 存在
+          # 同时也加上了交叉编译 Debian 包需要的常用工具
           sudo apt install -y build-essential bc bison flex libssl-dev libelf-dev \
             ccache git dwarves libncurses-dev crossbuild-essential-arm64 \
-            kmod xz-utils rsync debhelper config-package-dev curl
+            kmod xz-utils rsync debhelper config-package-dev curl libdw-dev
 
       - name: Clone Linux Kernel Source (v6.19+)
         run: |
-          # 直接拉取 Linus 的主线代码仓库，深度设为 1 以节省空间
           git clone --depth 1 https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git linux-source
 
-      - name: Configure Kernel (Silent & Pro-DKMS)
+      - name: Configure Kernel
         working-directory: ./linux-source
         run: |
-          # 1. 生成 arm64 基础默认配置
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
-          
-          # 2. 开启 Rocket NPU 驱动支持 (6.18+ 并入主线)
           ./scripts/config --enable CONFIG_DRM_ACCEL_ROCKET
-          
-          # 3. 开启 DKMS 必备的符号版本校验
           ./scripts/config --enable CONFIG_MODVERSIONS
-          
-          # 4. 优化：关闭调试信息以减小 Deb 包体积 (防止磁盘溢出，并加快编译)
           ./scripts/config --disable CONFIG_DEBUG_INFO
           ./scripts/config --disable CONFIG_DEBUG_INFO_BTF
           ./scripts/config --disable CONFIG_DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT
           ./scripts/config --set-str CONFIG_LOCALVERSION "-rockchip-mainline"
-
-          # 5. 静默更新配置，解决所有新增选项
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
 
       - name: Build Debian Packages
         working-directory: ./linux-source
         run: |
-          # KDEB_COMPRESS=xz 减少体积
-          # bindeb-pkg 会自动生成 image 和 headers 包
+          # 关键修改：添加 -d 标志给 dpkg-buildpackage 绕过严格的宿主机依赖检查
+          # 或者通过环境变量让 deb-pkg 知道我们在交叉编译
+          export KBUILD_BUILD_USER=runner
+          export KBUILD_BUILD_HOST=github-actions
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
             -j$(nproc) bindeb-pkg \
             KDEB_PKGVERSION=$(date +%Y%m%d)-custom \
-            KDEB_COMPRESS=xz
+            KDEB_COMPRESS=xz \
+            BINDEB_HOST_PROGS=1
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: linux-kernel-6.19-plus
           path: ./*.deb
-          retention-days: 0 # 遵循仓库默认最长期限，不设额外过期
+          retention-days: 0
