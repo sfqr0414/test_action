@@ -1,4 +1,4 @@
-name: Build Mainline Kernel (6.19+)
+name: Build Mainline Kernel 6.19+
 
 on:
   workflow_dispatch: # 手动触发
@@ -7,6 +7,12 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
+      - name: Free Disk Space (Critical for Kernel Build)
+        run: |
+          sudo docker image prune -a -f
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell /usr/share/swift
+          # 这样可以腾出约 15GB+ 空间
+
       - name: Install dependencies
         run: |
           sudo apt update
@@ -14,43 +20,45 @@ jobs:
             ccache git dwarves libncurses-dev crossbuild-essential-arm64 \
             kmod xz-utils rsync debhelper config-package-dev curl
 
-      - name: Download Latest Mainline Source
+      - name: Clone Linux Kernel Source (v6.19+)
         run: |
-          # 自动抓取最新的 6.19 或更高稳定版标签
-          KERNEL_URL=$(curl -s https://www.kernel.org/ | grep -oP 'https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.19[0-9.]*.tar.xz' | head -n 1)
-          if [ -z "$KERNEL_URL" ]; then KERNEL_URL="https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.19.tar.xz"; fi
-          echo "Downloading from: $KERNEL_URL"
-          wget $KERNEL_URL -O linux-kernel.tar.xz
-          mkdir linux-source && tar -xf linux-kernel.tar.xz -C linux-source --strip-components=1
+          # 直接拉取 Linus 的主线代码仓库，深度设为 1 以节省空间
+          git clone --depth 1 https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git linux-source
 
       - name: Configure Kernel (Silent & Pro-DKMS)
         working-directory: ./linux-source
         run: |
-          # 1. 基础配置
+          # 1. 生成 arm64 基础默认配置
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
           
-          # 2. 注入 Rocket NPU 驱动和 DKMS 支持
+          # 2. 开启 Rocket NPU 驱动支持 (6.18+ 并入主线)
           ./scripts/config --enable CONFIG_DRM_ACCEL_ROCKET
-          ./scripts/config --enable CONFIG_MODVERSIONS  # 增强魔改驱动兼容性
-          ./scripts/config --enable CONFIG_MODULE_SIG    # 模块签名支持
-          ./scripts/config --disable CONFIG_DEBUG_INFO_BTF # 减少打包体积，加快编译
+          
+          # 3. 开启 DKMS 必备的符号版本校验
+          ./scripts/config --enable CONFIG_MODVERSIONS
+          
+          # 4. 优化：关闭调试信息以减小 Deb 包体积 (防止磁盘溢出，并加快编译)
+          ./scripts/config --disable CONFIG_DEBUG_INFO
+          ./scripts/config --disable CONFIG_DEBUG_INFO_BTF
+          ./scripts/config --disable CONFIG_DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT
+          ./scripts/config --set-str CONFIG_LOCALVERSION "-rockchip-mainline"
 
-          # 3. 静默确认所有新增驱动 (olddefconfig 是主线最标准的非交互模式)
+          # 5. 静默更新配置，解决所有新增选项
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
 
-      - name: Build Debian Packages (Image + Headers)
+      - name: Build Debian Packages
         working-directory: ./linux-source
         run: |
-          # bindeb-pkg 会自动生成 headers 包供 DKMS 使用
-          # 设置多核编译提高速度
+          # KDEB_COMPRESS=xz 减少体积
+          # bindeb-pkg 会自动生成 image 和 headers 包
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
             -j$(nproc) bindeb-pkg \
-            KDEB_PKGVERSION=$(date +%Y%m%d)-mainline-custom
+            KDEB_PKGVERSION=$(date +%Y%m%d)-custom \
+            KDEB_COMPRESS=xz
 
-      - name: Upload Artifacts (Permanent)
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: linux-kernel-6.19-plus
           path: ./*.deb
-          # 移除 retention-days 或设为 0 以遵循仓库默认最长期限
-          retention-days: 0
+          retention-days: 0 # 遵循仓库默认最长期限，不设额外过期
