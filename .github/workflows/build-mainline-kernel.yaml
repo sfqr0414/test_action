@@ -1,0 +1,56 @@
+name: Build Mainline Kernel (6.19+)
+
+on:
+  workflow_dispatch: # 手动触发
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential bc bison flex libssl-dev libelf-dev \
+            ccache git dwarves libncurses-dev crossbuild-essential-arm64 \
+            kmod xz-utils rsync debhelper config-package-dev curl
+
+      - name: Download Latest Mainline Source
+        run: |
+          # 自动抓取最新的 6.19 或更高稳定版标签
+          KERNEL_URL=$(curl -s https://www.kernel.org/ | grep -oP 'https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.19[0-9.]*.tar.xz' | head -n 1)
+          if [ -z "$KERNEL_URL" ]; then KERNEL_URL="https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.19.tar.xz"; fi
+          echo "Downloading from: $KERNEL_URL"
+          wget $KERNEL_URL -O linux-kernel.tar.xz
+          mkdir linux-source && tar -xf linux-kernel.tar.xz -C linux-source --strip-components=1
+
+      - name: Configure Kernel (Silent & Pro-DKMS)
+        working-directory: ./linux-source
+        run: |
+          # 1. 基础配置
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
+          
+          # 2. 注入 Rocket NPU 驱动和 DKMS 支持
+          ./scripts/config --enable CONFIG_DRM_ACCEL_ROCKET
+          ./scripts/config --enable CONFIG_MODVERSIONS  # 增强魔改驱动兼容性
+          ./scripts/config --enable CONFIG_MODULE_SIG    # 模块签名支持
+          ./scripts/config --disable CONFIG_DEBUG_INFO_BTF # 减少打包体积，加快编译
+
+          # 3. 静默确认所有新增驱动 (olddefconfig 是主线最标准的非交互模式)
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+
+      - name: Build Debian Packages (Image + Headers)
+        working-directory: ./linux-source
+        run: |
+          # bindeb-pkg 会自动生成 headers 包供 DKMS 使用
+          # 设置多核编译提高速度
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            -j$(nproc) bindeb-pkg \
+            KDEB_PKGVERSION=$(date +%Y%m%d)-mainline-custom
+
+      - name: Upload Artifacts (Permanent)
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-kernel-6.19-plus
+          path: ./*.deb
+          # 移除 retention-days 或设为 0 以遵循仓库默认最长期限
+          retention-days: 0
