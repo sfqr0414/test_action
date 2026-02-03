@@ -22,7 +22,6 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell /usr/share/swift
           df -h
 
-      # 修正：使用 docker 官方维护的 setup-qemu-action
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -30,7 +29,8 @@ jobs:
         id: gcc-check
         run: |
           UBUNTU_VERSION="${{ github.event.inputs.ubuntu-version }}"
-          EXPECTED_GCC_VERSION=$(docker run --rm --entrypoint /bin/bash \
+          # 同样需要在预查时指定 platform
+          EXPECTED_GCC_VERSION=$(docker run --rm --platform linux/arm64 --entrypoint /bin/bash \
             -e DEBIAN_FRONTEND=noninteractive \
             ubuntu:"${UBUNTU_VERSION}" -c "
             apt-get update -qq >/dev/null && 
@@ -76,13 +76,16 @@ jobs:
           export KBUILD_BUILD_HOST=github-actions
           export DEB_BUILD_OPTIONS="nostrip nodbg"
           
+          # 在 QEMU 模拟环境下，建议不要将核心数开得太满，防止 OOM
           make -j$(nproc) bindeb-pkg KDEB_PKGVERSION=$(date +%Y%m%d)-armbian-edge KDEB_COMPRESS=xz
           EOF
           chmod +x build_script.sh
 
       - name: Run Build in Docker
         run: |
+          # 关键点：添加 --platform linux/arm64 解决架构匹配问题
           docker run --rm --privileged \
+            --platform linux/arm64 \
             -v ${{ github.workspace }}:/workspace \
             -w /workspace \
             -e EXPECTED_GCC="${{ steps.gcc-check.outputs.expected_gcc }}" \
