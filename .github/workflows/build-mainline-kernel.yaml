@@ -1,72 +1,96 @@
-name: Build Mainline Kernel 6.19+ (Armbian Edge Config)
+name: Build Pure Mainline Kernel 6.19+ (Docker Ubuntu 25.10)
 
 on:
   workflow_dispatch:
+    inputs:
+      ubuntu-version:
+        description: 'Target Ubuntu version (e.g., 25.10)'
+        required: true
+        default: '25.10'
+        type: string
 
 jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
+
       - name: Free Disk Space
         run: |
           sudo docker image prune -a -f
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell /usr/share/swift
-          
-      - name: Install dependencies
+          df -h
+
+      - name: Set up QEMU
+        uses: actions/setup-qemu-action@v3
+
+      - name: Pre-check Expected GCC Version
+        id: gcc-check
         run: |
-          sudo apt update
-          sudo apt install -y build-essential bc bison flex libssl-dev libelf-dev \
-            ccache git dwarves libncurses-dev crossbuild-essential-arm64 \
-            kmod xz-utils rsync debhelper config-package-dev curl libdw-dev
+          UBUNTU_VERSION="${{ github.event.inputs.ubuntu-version }}"
+          EXPECTED_GCC_VERSION=$(docker run --rm --entrypoint /bin/bash \
+            -e DEBIAN_FRONTEND=noninteractive \
+            ubuntu:"${UBUNTU_VERSION}" -c "
+            apt-get update -qq >/dev/null && 
+            apt-get install -qq --no-install-recommends gcc -y >/dev/null && 
+            gcc --version | head -1 | awk '{print \$4}' | sed 's/)//'
+          ")
+          echo "expected_gcc=${EXPECTED_GCC_VERSION}" >> $GITHUB_OUTPUT
 
       - name: Clone Linux Kernel Source (v6.19+)
         run: |
           git clone --depth 1 https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git linux-source
 
-      - name: Fetch Armbian Edge Config
-        working-directory: ./linux-source
+      - name: Create Build Script
         run: |
-          # 下载 Armbian 为 Rockchip64 准备的最新 Edge 配置作为蓝本
+          cat << 'EOF' > build_script.sh
+          set -e
+          apt-get update -qq
+          apt-get install -qq -y \
+            build-essential bc bison flex libssl-dev libelf-dev \
+            ccache git dwarves libncurses-dev kmod xz-utils rsync \
+            debhelper config-package-dev curl libdw-dev \
+            python3-minimal python3-dev libcap-dev debianutils \
+            fakeroot kmod
+
+          ACTUAL_GCC=$(gcc --version | head -1 | awk '{print $4}' | sed 's/)//')
+          if [ "$ACTUAL_GCC" != "$EXPECTED_GCC" ]; then
+            echo "ABI Mismatch!"
+            exit 1
+          fi
+
+          cd /workspace/linux-source
           curl -sLo .config https://raw.githubusercontent.com/armbian/build/main/config/kernel/linux-rockchip64-edge.config
-          echo "Armbian config downloaded."
-
-      - name: Inject Custom Configurations (Rocket NPU & DKMS)
-        working-directory: ./linux-source
-        run: |
-          # 1. 基础转换：确保配置适配当前内核版本
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
-
-          # 2. 注入 Rocket NPU 驱动支持
+          make olddefconfig
           ./scripts/config --enable CONFIG_DRM_ACCEL_ROCKET
-          
-          # 3. 增强 DKMS 兼容性 (魔改 WiFi 驱动必备)
           ./scripts/config --enable CONFIG_MODVERSIONS
           ./scripts/config --enable CONFIG_MODULE_SRCVERSION_ALL
-          
-          # 4. 裁剪优化：关闭繁重的调试符号以节省磁盘空间和编译时间
           ./scripts/config --disable CONFIG_DEBUG_INFO
           ./scripts/config --disable CONFIG_DEBUG_INFO_BTF
-          ./scripts/config --disable CONFIG_DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT
           ./scripts/config --set-str CONFIG_LOCALVERSION "-rockchip-mainline"
+          make olddefconfig
 
-          # 5. 再次整理并静默确认
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
-
-      - name: Build Debian Packages
-        working-directory: ./linux-source
-        run: |
           export KBUILD_BUILD_USER=runner
           export KBUILD_BUILD_HOST=github-actions
-          # 使用 DPKG_FLAGS="-d" 绕过宿主机依赖检查
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
-            -j$(nproc) bindeb-pkg \
-            KDEB_PKGVERSION=$(date +%Y%m%d)-armbian-edge \
-            KDEB_COMPRESS=xz \
-            DPKG_FLAGS="-d"
+          export DEB_BUILD_OPTIONS="nostrip nodbg"
+          
+          make -j$(nproc) bindeb-pkg KDEB_PKGVERSION=$(date +%Y%m%d)-armbian-edge KDEB_COMPRESS=xz
+          EOF
+          chmod +x build_script.sh
+
+      - name: Run Build in Docker
+        run: |
+          docker run --rm --privileged \
+            -v ${{ github.workspace }}:/workspace \
+            -w /workspace \
+            -e EXPECTED_GCC="${{ steps.gcc-check.outputs.expected_gcc }}" \
+            -arm64v8/ubuntu:"${{ github.event.inputs.ubuntu-version }}" /bin/bash /workspace/build_script.sh
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: linux-kernel-6.19-armbian-edge
+          name: linux-kernel-6.19-${{ github.event.inputs.ubuntu-version }}-pure
           path: ./*.deb
-          retention-days: 0
+          # 设置为 90 天，这是 GitHub 公共库的最大期限
+          retention-days: 90
