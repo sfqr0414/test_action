@@ -31,7 +31,6 @@ jobs:
         id: gcc-check
         run: |
           UBUNTU_VERSION="${{ github.event.inputs.ubuntu-version }}"
-          # 在 x86 容器中查询 aarch64 交叉编译器的版本
           EXPECTED_GCC_VERSION=$(docker run --rm --entrypoint /bin/bash \
             -e DEBIAN_FRONTEND=noninteractive \
             ubuntu:"${UBUNTU_VERSION}" -c "
@@ -57,14 +56,16 @@ jobs:
         run: |
           cat << 'EOF' > build_script.sh
           set -e
-          # 1. 安装交叉编译工具链 (x86_64 运行，产出 arm64)
+          # 1. 开启多架构支持并安装交叉编译工具链
+          dpkg --add-architecture arm64
           apt-get update -qq
           apt-get install -qq -y \
             build-essential bc bison flex libssl-dev libelf-dev \
             ccache git dwarves libncurses-dev kmod xz-utils rsync \
             debhelper config-package-dev curl libdw-dev \
             python3-minimal python3-dev libcap-dev debianutils \
-            fakeroot gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+            fakeroot gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            libssl-dev:arm64 # 显式安装 arm64 的 SSL 库
 
           # 2. 校验交叉编译器版本
           ACTUAL_GCC=$(aarch64-linux-gnu-gcc --version | head -1 | awk '{print $4}' | sed 's/)//')
@@ -78,7 +79,6 @@ jobs:
           cd /workspace/linux-source
           curl -sLo .config https://raw.githubusercontent.com/armbian/build/main/config/kernel/linux-rockchip64-edge.config
           
-          # 显式指定架构执行配置
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           
@@ -91,24 +91,22 @@ jobs:
           ./scripts/config --set-str CONFIG_LOCALVERSION "-rockchip-mainline"
           make olddefconfig
 
-          # 4. 执行交叉编译
+          # 4. 执行交叉编译 (关键修改：增加 DPKG_FLAGS="-d")
           export KBUILD_BUILD_USER=runner
           export KBUILD_BUILD_HOST=github-actions
           export DEB_BUILD_OPTIONS="nostrip nodbg"
           
-          # 交叉编译 bindeb-pkg
           make -j$(nproc) bindeb-pkg \
             ARCH=arm64 \
             CROSS_COMPILE=aarch64-linux-gnu- \
             KDEB_PKGVERSION=$(date +%Y%m%d)-armbian-edge \
-            KDEB_COMPRESS=xz
+            KDEB_COMPRESS=xz \
+            DPKG_FLAGS="-d" # 告诉 dpkg 跳过依赖检查
           EOF
           chmod +x build_script.sh
 
       - name: Run Cross-Build in x86_64 Docker
         run: |
-          # 注意：这里不再指定 --platform linux/arm64，而是使用默认的 x86_64 镜像
-          # 这样会直接跑在宿主机 CPU 上，速度极快
           docker run --rm --privileged \
             -v ${{ github.workspace }}:/workspace \
             -w /workspace \
