@@ -8,9 +8,9 @@ on:
         required: true
         default: '24.04'
       target_kernel_version:
-        description: 'Kernel Version (e.g., 6.19)'
+        description: 'Kernel Version (e.g., 6.19-rc8)'
         required: true
-        default: '6.19'
+        default: '6.19-rc8'
 
 jobs:
   build:
@@ -35,7 +35,9 @@ jobs:
         env:
           VERSION: ${{ github.event.inputs.target_kernel_version }}
         run: |
-          MAJOR=$(echo $VERSION | cut -d. -f1)
+          # 清洗版本号，处理 rc 标签
+          BASE_VERSION=$(echo $VERSION | cut -d- -f1)
+          MAJOR=$(echo $BASE_VERSION | cut -d. -f1)
           URL="https://www.kernel.org/pub/linux/kernel/v${MAJOR}.x/linux-${VERSION}.tar.xz"
           
           echo "Step 1: 尝试探测 Tarball -> $URL"
@@ -50,7 +52,7 @@ jobs:
               TAG="v${VERSION}"
               git clone --depth 1 --branch "$TAG" https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git linux-source || \
               {
-                echo "未找到标签，拉取 master 分支"
+                echo "未找到标签，尝试拉取 master"
                 git clone --depth 1 https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git linux-source
               }
           fi
@@ -60,7 +62,7 @@ jobs:
           cat << 'EOF' > build_script.sh
           set -e
           
-          # 1. 严格遵循你提供的安装列表
+          # 1. 安装基础依赖
           apt-get update -qq
           apt-get install -qq -y \
             build-essential bc bison flex libssl-dev libelf-dev \
@@ -69,42 +71,47 @@ jobs:
             python3-minimal python3-dev libcap-dev debianutils \
             fakeroot gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
 
-          # 2. 版本强校验 (保持不变)
+          # 2. 版本强校验
           ACTUAL_GCC=$(aarch64-linux-gnu-gcc --version | head -1 | awk '{print $4}' | sed 's/)//')
-          echo "Actual Cross-GCC: $ACTUAL_GCC | Expected: $EXPECTED_GCC"
           if [ "$ACTUAL_GCC" != "$EXPECTED_GCC" ]; then
             echo "ABI Mismatch Error!"
             exit 1
           fi
 
-          # 3. 内核配置
+          # 3. 内核配置阶段
           cd /workspace/linux-source
+          
+          # 使用 Armbian Edge 作为底座
           curl -sLo .config https://raw.githubusercontent.com/armbian/build/main/config/kernel/linux-rockchip64-edge.config
           
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           
+          # 抹除源码自带的版本后缀干扰
+          touch .scmversion
+          
           make olddefconfig
           
-          # --- [保留你的目标配置] ---
+          # --- [回归你确认成功的配置参数] ---
           ./scripts/config --enable CONFIG_DRM_ACCEL_ROCKET
           ./scripts/config --enable CONFIG_MODVERSIONS
-          ./scripts/config --enable CONFIG_MODULE_SRCVERSION_ALL
           ./scripts/config --disable CONFIG_DEBUG_INFO
           ./scripts/config --disable CONFIG_DEBUG_INFO_BTF
+          ./scripts/config --disable CONFIG_DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT
           
-          # --- [集成 Panthor GPU & Samba 优化] ---
-          ./scripts/config --enable CONFIG_DRM_PANTHOR
-          ./scripts/config --enable CONFIG_PHY_ROCKCHIP_SAMSUNG_HDPTX
-          ./scripts/config --enable CONFIG_DRM_ROCKCHIP_DW_HDMI_QP
-          ./scripts/config --enable CONFIG_CIFS_SMB_DIRECT
+          # --- [EDK2/NVMe 启动保障：强制内置核心驱动] ---
+          ./scripts/config --enable CONFIG_NVME_CORE
+          ./scripts/config --enable CONFIG_BLK_DEV_NVME
+          ./scripts/config --enable CONFIG_PCIE_ROCKCHIP_DW_HOST
+          ./scripts/config --enable CONFIG_PHY_ROCKCHIP_NANENG_COMBO_PHY
+          ./scripts/config --enable CONFIG_EFI_STUB
           
-          # --- [名称定义] ---
-          ./scripts/config --set-str CONFIG_LOCALVERSION "-preview"
+          # --- [回归你成功的名称定义，对齐路径] ---
+          ./scripts/config --set-str CONFIG_LOCALVERSION "-rockchip-mainline"
           
           make olddefconfig
 
-          # 4. 执行交叉编译并强制打包 (完全遵循你的参数)
+          # 4. 执行交叉编译并打包
           export KBUILD_BUILD_USER=runner
           export KBUILD_BUILD_HOST=github-actions
           export DEB_BUILD_OPTIONS="nostrip nodbg"
@@ -130,5 +137,5 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-op5max-6.19-preview
+          name: kernel-op5max-6.19-final-fix
           path: ./*.deb
