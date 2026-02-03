@@ -1,4 +1,4 @@
-name: Build Pure Mainline Kernel 6.19+ (Docker Ubuntu 25.10)
+name: Build Pure Mainline Kernel (Docker & Tarball)
 
 on:
   workflow_dispatch:
@@ -7,6 +7,11 @@ on:
         description: 'Target Ubuntu version (e.g., 25.10)'
         required: true
         default: '25.10'
+        type: string
+      target_kernel_version:
+        description: 'Target Linux Kernel Version (e.g., 6.18.3)'
+        required: true
+        default: '6.18.3'
         type: string
 
 jobs:
@@ -29,7 +34,6 @@ jobs:
         id: gcc-check
         run: |
           UBUNTU_VERSION="${{ github.event.inputs.ubuntu-version }}"
-          # 同样需要在预查时指定 platform
           EXPECTED_GCC_VERSION=$(docker run --rm --platform linux/arm64 --entrypoint /bin/bash \
             -e DEBIAN_FRONTEND=noninteractive \
             ubuntu:"${UBUNTU_VERSION}" -c "
@@ -39,9 +43,20 @@ jobs:
           ")
           echo "expected_gcc=${EXPECTED_GCC_VERSION}" >> $GITHUB_OUTPUT
 
-      - name: Clone Linux Kernel Source (v6.19+)
+      - name: Download and Extract Kernel Source
         run: |
-          git clone --depth 1 https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git linux-source
+          TARGET_KERNEL_VERSION="${{ github.event.inputs.target_kernel_version }}"
+          # 自动解析主版本号，例如 6.18.3 -> 6, 5.15 -> 5
+          KERNEL_MAJOR_X="${TARGET_KERNEL_VERSION%%.*}"
+          KERNEL_TAR_URL="https://www.kernel.org/pub/linux/kernel/v${KERNEL_MAJOR_X}.x/linux-${TARGET_KERNEL_VERSION}.tar.xz"
+          
+          echo "Downloading Kernel v${TARGET_KERNEL_VERSION} from ${KERNEL_TAR_URL}..."
+          wget -q -O linux-source.tar.xz "${KERNEL_TAR_URL}"
+          
+          mkdir -p linux-source
+          echo "Extracting kernel source..."
+          tar -xJf linux-source.tar.xz -C linux-source --strip-components=1
+          rm linux-source.tar.xz
 
       - name: Create Build Script
         run: |
@@ -62,7 +77,9 @@ jobs:
           fi
 
           cd /workspace/linux-source
+          # 下载 Armbian 配置蓝本
           curl -sLo .config https://raw.githubusercontent.com/armbian/build/main/config/kernel/linux-rockchip64-edge.config
+          
           make olddefconfig
           ./scripts/config --enable CONFIG_DRM_ACCEL_ROCKET
           ./scripts/config --enable CONFIG_MODVERSIONS
@@ -76,14 +93,12 @@ jobs:
           export KBUILD_BUILD_HOST=github-actions
           export DEB_BUILD_OPTIONS="nostrip nodbg"
           
-          # 在 QEMU 模拟环境下，建议不要将核心数开得太满，防止 OOM
           make -j$(nproc) bindeb-pkg KDEB_PKGVERSION=$(date +%Y%m%d)-armbian-edge KDEB_COMPRESS=xz
           EOF
           chmod +x build_script.sh
 
       - name: Run Build in Docker
         run: |
-          # 关键点：添加 --platform linux/arm64 解决架构匹配问题
           docker run --rm --privileged \
             --platform linux/arm64 \
             -v ${{ github.workspace }}:/workspace \
@@ -95,6 +110,6 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: linux-kernel-6.19-${{ github.event.inputs.ubuntu-version }}-pure
+          name: linux-kernel-${{ github.event.inputs.target_kernel_version }}-${{ github.event.inputs.ubuntu-version }}
           path: ./*.deb
           retention-days: 90
