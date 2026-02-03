@@ -1,18 +1,12 @@
-name: Build Mainline Kernel (Final Clean Cross-Compile)
+name: Build Mainline Kernel (OP5 Max 6.19 Hybrid)
 
 on:
   workflow_dispatch:
     inputs:
-      ubuntu-version:
-        description: 'Target Ubuntu version (e.g., 25.10)'
-        required: true
-        default: '25.10'
-        type: string
       target_kernel_version:
-        description: 'Target Linux Kernel Version (e.g., 6.18.3)'
+        description: 'Kernel Version (e.g., 6.19)'
         required: true
         default: '6.19'
-        type: string
 
 jobs:
   build:
@@ -25,99 +19,70 @@ jobs:
         run: |
           sudo docker image prune -a -f
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell /usr/share/swift
-          df -h
 
-      - name: Pre-check Expected GCC Version
-        id: gcc-check
+      - name: Fetch Kernel Source (Tarball with Git Fallback)
+        env:
+          VERSION: ${{ github.event.inputs.target_kernel_version }}
         run: |
-          UBUNTU_VERSION="${{ github.event.inputs.ubuntu-version }}"
-          # 在宿主机架构容器内获取交叉编译器的预期版本
-          EXPECTED_GCC_VERSION=$(docker run --rm --entrypoint /bin/bash \
-            -e DEBIAN_FRONTEND=noninteractive \
-            ubuntu:"${UBUNTU_VERSION}" -c "
-            apt-get update -qq >/dev/null && 
-            apt-get install -qq --no-install-recommends gcc-aarch64-linux-gnu -y >/dev/null && 
-            aarch64-linux-gnu-gcc --version | head -1 | awk '{print \$4}' | sed 's/)//'
-          ")
-          echo "expected_gcc=${EXPECTED_GCC_VERSION}" >> $GITHUB_OUTPUT
-
-      - name: Download and Extract Kernel Source
-        run: |
-          TARGET_KERNEL_VERSION="${{ github.event.inputs.target_kernel_version }}"
-          KERNEL_MAJOR_X="${TARGET_KERNEL_VERSION%%.*}"
-          KERNEL_TAR_URL="https://www.kernel.org/pub/linux/kernel/v${KERNEL_MAJOR_X}.x/linux-${TARGET_KERNEL_VERSION}.tar.xz"
+          MAJOR=$(echo $VERSION | cut -d. -f1)
+          URL="https://www.kernel.org/pub/linux/kernel/v${MAJOR}.x/linux-${VERSION}.tar.xz"
           
-          echo "Downloading Kernel v${TARGET_KERNEL_VERSION}..."
-          wget -q -O linux-source.tar.xz "${KERNEL_TAR_URL}"
-          mkdir -p linux-source
-          tar -xJf linux-source.tar.xz -C linux-source --strip-components=1
-          rm linux-source.tar.xz
+          echo "Step 1: 尝试探测 Tarball 资源 -> $URL"
+          # 使用 --spider 探测，不下载
+          if wget -q --spider "$URL"; then
+              echo "资源存在，开始高速下载 Tarball..."
+              wget -q -O src.tar.xz "$URL"
+              mkdir -p linux-source
+              tar -xJf src.tar.xz -C linux-source --strip-components=1
+              rm src.tar.xz
+          else
+              echo "Step 1 失败 (资源未发布)，执行 Step 2: 浅克隆 Git 仓库 (v${VERSION})"
+              # 如果正式版没出，Git 可能会报错找不到标签，所以加一个 fallback 到 master 或相关分支的逻辑
+              TAG="v${VERSION}"
+              git clone --depth 1 --branch "$TAG" https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git linux-source || \
+              {
+                echo "警告: 未找到标签 $TAG，尝试克隆 master 分支 (包含最新 6.19 代码)"
+                git clone --depth 1 https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git linux-source
+              }
+          fi
 
       - name: Create Build Script
         run: |
           cat << 'EOF' > build_script.sh
           set -e
-          
-          # 1. 只安装 x86_64 的构建工具和开发库
-          apt-get update -qq
-          apt-get install -qq -y \
-            build-essential bc bison flex libssl-dev libelf-dev \
-            ccache git dwarves libncurses-dev kmod xz-utils rsync \
-            debhelper config-package-dev curl libdw-dev \
-            python3-minimal python3-dev libcap-dev debianutils \
-            fakeroot gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+          apt-get update -qq && apt-get install -qq -y build-essential bc bison flex libssl-dev libelf-dev ccache dwarves libncurses-dev rsync debhelper config-package-dev curl gcc-aarch64-linux-gnu git
 
-          # 2. 版本强校验
-          ACTUAL_GCC=$(aarch64-linux-gnu-gcc --version | head -1 | awk '{print $4}' | sed 's/)//')
-          echo "Actual Cross-GCC: $ACTUAL_GCC | Expected: $EXPECTED_GCC"
-          if [ "$ACTUAL_GCC" != "$EXPECTED_GCC" ]; then
-            echo "ABI Mismatch Error!"
-            exit 1
-          fi
-
-          # 3. 内核配置
           cd /workspace/linux-source
+          # 拉取 Armbian 针对 RK3588 的主线配置基准
           curl -sLo .config https://raw.githubusercontent.com/armbian/build/main/config/kernel/linux-rockchip64-edge.config
           
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           
-          make olddefconfig
-          ./scripts/config --enable CONFIG_DRM_ACCEL_ROCKET
-          ./scripts/config --enable CONFIG_MODVERSIONS
-          ./scripts/config --enable CONFIG_MODULE_SRCVERSION_ALL
-          ./scripts/config --disable CONFIG_DEBUG_INFO
-          ./scripts/config --disable CONFIG_DEBUG_INFO_BTF
-          ./scripts/config --set-str CONFIG_LOCALVERSION "-rockchip-mainline"
-          make olddefconfig
-
-          # 4. 执行交叉编译并强制打包
-          export KBUILD_BUILD_USER=runner
-          export KBUILD_BUILD_HOST=github-actions
-          export DEB_BUILD_OPTIONS="nostrip nodbg"
+          # --- [核心：GPU & HDMI 修复] ---
+          ./scripts/config --enable CONFIG_DRM_PANTHOR
+          ./scripts/config --enable CONFIG_PHY_ROCKCHIP_SAMSUNG_HDPTX
+          ./scripts/config --enable CONFIG_DRM_ROCKCHIP_DW_HDMI_QP
           
-          # DPKG_FLAGS="-d" 是扫清 "unmet build dependencies" 障碍的关键
-          make -j$(nproc) bindeb-pkg \
-            ARCH=arm64 \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            KDEB_PKGVERSION=$(date +%Y%m%d)-armbian-edge \
-            KDEB_COMPRESS=xz \
-            DPKG_FLAGS="-d"
+          # --- [核心：Samba 响应优化] ---
+          ./scripts/config --enable CONFIG_CIFS_SMB_DIRECT
+          
+          # --- [基础优化与名称简化] ---
+          ./scripts/config --disable CONFIG_DEBUG_INFO
+          # 仅保留 preview
+          ./scripts/config --set-str CONFIG_LOCALVERSION "-preview"
+          
+          make olddefconfig
+          make -j$(nproc) bindeb-pkg KDEB_PKGVERSION=$(date +%Y%m%d)
           EOF
           chmod +x build_script.sh
 
-      - name: Run Build in x86_64 Docker
+      - name: Run Build in Docker
         run: |
-          docker run --rm --privileged \
-            -v ${{ github.workspace }}:/workspace \
-            -w /workspace \
-            -e EXPECTED_GCC="${{ steps.gcc-check.outputs.expected_gcc }}" \
-            -e DEBIAN_FRONTEND=noninteractive \
-            ubuntu:"${{ github.event.inputs.ubuntu-version }}" /bin/bash /workspace/build_script.sh
+          docker run --rm -v ${{ github.workspace }}:/workspace -w /workspace ubuntu:24.04 /bin/bash /workspace/build_script.sh
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: linux-kernel-${{ github.event.inputs.target_kernel_version }}-cross-compiled
+          name: kernel-op5max-6.19-preview
           path: ./*.deb
-          retention-days: 90
