@@ -56,26 +56,40 @@ jobs:
         run: |
           cat << 'EOF' > build_script.sh
           set -e
-          # 1. 开启多架构支持并安装交叉编译工具链
+          
+          # 1. 关键修复：配置多架构软件源路径
           dpkg --add-architecture arm64
+          
+          # 更新 sources.list，为 [arch=amd64] 和 [arch=arm64] 分别指定服务器
+          # Ubuntu 24.04+ 使用了新的 .sources 格式 (DEB822)，但容器镜像往往兼容旧格式
+          sed -i "s/^deb /deb [arch=amd64] /g" /etc/apt/sources.list.d/ubuntu.sources || \
+          sed -i "s/^deb /deb [arch=amd64] /g" /etc/apt/sources.list
+          
+          # 添加 ports 源用于下载 arm64 的 libssl-dev
+          codename=$(grep VERSION_CODENAME /etc/os-release | cut -d= -f2)
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports ${codename} main restricted universe multiverse" >> /etc/apt/sources.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports ${codename}-updates main restricted universe multiverse" >> /etc/apt/sources.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports ${codename}-security main restricted universe multiverse" >> /etc/apt/sources.list
+
           apt-get update -qq
+          
+          # 2. 安装依赖
           apt-get install -qq -y \
             build-essential bc bison flex libssl-dev libelf-dev \
             ccache git dwarves libncurses-dev kmod xz-utils rsync \
             debhelper config-package-dev curl libdw-dev \
             python3-minimal python3-dev libcap-dev debianutils \
             fakeroot gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
-            libssl-dev:arm64 # 显式安装 arm64 的 SSL 库
+            libssl-dev:arm64 libelf-dev:arm64
 
-          # 2. 校验交叉编译器版本
+          # 3. 校验交叉编译器版本
           ACTUAL_GCC=$(aarch64-linux-gnu-gcc --version | head -1 | awk '{print $4}' | sed 's/)//')
-          echo "Actual Cross-GCC: $ACTUAL_GCC | Expected: $EXPECTED_GCC"
           if [ "$ACTUAL_GCC" != "$EXPECTED_GCC" ]; then
             echo "ABI Mismatch Error!"
             exit 1
           fi
 
-          # 3. 内核配置
+          # 4. 内核配置与编译
           cd /workspace/linux-source
           curl -sLo .config https://raw.githubusercontent.com/armbian/build/main/config/kernel/linux-rockchip64-edge.config
           
@@ -91,7 +105,6 @@ jobs:
           ./scripts/config --set-str CONFIG_LOCALVERSION "-rockchip-mainline"
           make olddefconfig
 
-          # 4. 执行交叉编译 (关键修改：增加 DPKG_FLAGS="-d")
           export KBUILD_BUILD_USER=runner
           export KBUILD_BUILD_HOST=github-actions
           export DEB_BUILD_OPTIONS="nostrip nodbg"
@@ -101,7 +114,7 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu- \
             KDEB_PKGVERSION=$(date +%Y%m%d)-armbian-edge \
             KDEB_COMPRESS=xz \
-            DPKG_FLAGS="-d" # 告诉 dpkg 跳过依赖检查
+            DPKG_FLAGS="-d"
           EOF
           chmod +x build_script.sh
 
