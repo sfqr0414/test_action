@@ -28,7 +28,6 @@ jobs:
           URL="https://www.kernel.org/pub/linux/kernel/v${MAJOR}.x/linux-${VERSION}.tar.xz"
           
           echo "Step 1: 尝试探测 Tarball 资源 -> $URL"
-          # 使用 --spider 探测，不下载
           if wget -q --spider "$URL"; then
               echo "资源存在，开始高速下载 Tarball..."
               wget -q -O src.tar.xz "$URL"
@@ -37,11 +36,10 @@ jobs:
               rm src.tar.xz
           else
               echo "Step 1 失败 (资源未发布)，执行 Step 2: 浅克隆 Git 仓库 (v${VERSION})"
-              # 如果正式版没出，Git 可能会报错找不到标签，所以加一个 fallback 到 master 或相关分支的逻辑
               TAG="v${VERSION}"
               git clone --depth 1 --branch "$TAG" https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git linux-source || \
               {
-                echo "警告: 未找到标签 $TAG，尝试克隆 master 分支 (包含最新 6.19 代码)"
+                echo "警告: 未找到标签 $TAG，尝试克隆 master 分支..."
                 git clone --depth 1 https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git linux-source
               }
           fi
@@ -53,7 +51,6 @@ jobs:
           apt-get update -qq && apt-get install -qq -y build-essential bc bison flex libssl-dev libelf-dev ccache dwarves libncurses-dev rsync debhelper config-package-dev curl gcc-aarch64-linux-gnu git
 
           cd /workspace/linux-source
-          # 拉取 Armbian 针对 RK3588 的主线配置基准
           curl -sLo .config https://raw.githubusercontent.com/armbian/build/main/config/kernel/linux-rockchip64-edge.config
           
           export ARCH=arm64
@@ -64,12 +61,17 @@ jobs:
           ./scripts/config --enable CONFIG_PHY_ROCKCHIP_SAMSUNG_HDPTX
           ./scripts/config --enable CONFIG_DRM_ROCKCHIP_DW_HDMI_QP
           
+          # --- [你的目标配置：模块兼容性与调试优化] ---
+          ./scripts/config --enable CONFIG_DRM_ACCEL_ROCKET
+          ./scripts/config --enable CONFIG_MODVERSIONS
+          ./scripts/config --enable CONFIG_MODULE_SRCVERSION_ALL
+          ./scripts/config --disable CONFIG_DEBUG_INFO
+          ./scripts/config --disable CONFIG_DEBUG_INFO_BTF
+          
           # --- [核心：Samba 响应优化] ---
           ./scripts/config --enable CONFIG_CIFS_SMB_DIRECT
           
-          # --- [基础优化与名称简化] ---
-          ./scripts/config --disable CONFIG_DEBUG_INFO
-          # 仅保留 preview
+          # --- [名称简化] ---
           ./scripts/config --set-str CONFIG_LOCALVERSION "-preview"
           
           make olddefconfig
