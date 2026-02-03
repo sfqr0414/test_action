@@ -1,4 +1,4 @@
-name: Build Mainline Kernel (Clean Cross-Compile)
+name: Build Mainline Kernel (Final Clean Cross-Compile)
 
 on:
   workflow_dispatch:
@@ -25,11 +25,13 @@ jobs:
         run: |
           sudo docker image prune -a -f
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell /usr/share/swift
+          df -h
 
       - name: Pre-check Expected GCC Version
         id: gcc-check
         run: |
           UBUNTU_VERSION="${{ github.event.inputs.ubuntu-version }}"
+          # 在宿主机架构容器内获取交叉编译器的预期版本
           EXPECTED_GCC_VERSION=$(docker run --rm --entrypoint /bin/bash \
             -e DEBIAN_FRONTEND=noninteractive \
             ubuntu:"${UBUNTU_VERSION}" -c "
@@ -45,6 +47,7 @@ jobs:
           KERNEL_MAJOR_X="${TARGET_KERNEL_VERSION%%.*}"
           KERNEL_TAR_URL="https://www.kernel.org/pub/linux/kernel/v${KERNEL_MAJOR_X}.x/linux-${TARGET_KERNEL_VERSION}.tar.xz"
           
+          echo "Downloading Kernel v${TARGET_KERNEL_VERSION}..."
           wget -q -O linux-source.tar.xz "${KERNEL_TAR_URL}"
           mkdir -p linux-source
           tar -xJf linux-source.tar.xz -C linux-source --strip-components=1
@@ -55,7 +58,7 @@ jobs:
           cat << 'EOF' > build_script.sh
           set -e
           
-          # 1. 仅安装宿主机 (x86_64) 的工具链和开发库
+          # 1. 只安装 x86_64 的构建工具和开发库
           apt-get update -qq
           apt-get install -qq -y \
             build-essential bc bison flex libssl-dev libelf-dev \
@@ -64,8 +67,9 @@ jobs:
             python3-minimal python3-dev libcap-dev debianutils \
             fakeroot gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
 
-          # 2. 校验版本
+          # 2. 版本强校验
           ACTUAL_GCC=$(aarch64-linux-gnu-gcc --version | head -1 | awk '{print $4}' | sed 's/)//')
+          echo "Actual Cross-GCC: $ACTUAL_GCC | Expected: $EXPECTED_GCC"
           if [ "$ACTUAL_GCC" != "$EXPECTED_GCC" ]; then
             echo "ABI Mismatch Error!"
             exit 1
@@ -87,14 +91,12 @@ jobs:
           ./scripts/config --set-str CONFIG_LOCALVERSION "-rockchip-mainline"
           make olddefconfig
 
-          # 4. 关键：使用 BIND_NOW 和 DPKG_FLAGS 绕过目标架构检查
+          # 4. 执行交叉编译并强制打包
           export KBUILD_BUILD_USER=runner
           export KBUILD_BUILD_HOST=github-actions
           export DEB_BUILD_OPTIONS="nostrip nodbg"
           
-          # 核心技巧：
-          # KDEB_NOSRCTREE=1 和 DPKG_FLAGS="-d" 配合 
-          # 强制告诉内核打包脚本：只管编译，不要去检查 arm64 的库依赖
+          # DPKG_FLAGS="-d" 是扫清 "unmet build dependencies" 障碍的关键
           make -j$(nproc) bindeb-pkg \
             ARCH=arm64 \
             CROSS_COMPILE=aarch64-linux-gnu- \
