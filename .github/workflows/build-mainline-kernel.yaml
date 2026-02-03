@@ -1,4 +1,4 @@
-name: Build Pure Mainline Kernel (Docker & Tarball)
+name: Build Mainline Kernel (Cross-Compile & Docker)
 
 on:
   workflow_dispatch:
@@ -27,58 +27,60 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell /usr/share/swift
           df -h
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
       - name: Pre-check Expected GCC Version
         id: gcc-check
         run: |
           UBUNTU_VERSION="${{ github.event.inputs.ubuntu-version }}"
-          EXPECTED_GCC_VERSION=$(docker run --rm --platform linux/arm64 --entrypoint /bin/bash \
+          # 在 x86 容器中查询 aarch64 交叉编译器的版本
+          EXPECTED_GCC_VERSION=$(docker run --rm --entrypoint /bin/bash \
             -e DEBIAN_FRONTEND=noninteractive \
             ubuntu:"${UBUNTU_VERSION}" -c "
             apt-get update -qq >/dev/null && 
-            apt-get install -qq --no-install-recommends gcc -y >/dev/null && 
-            gcc --version | head -1 | awk '{print \$4}' | sed 's/)//'
+            apt-get install -qq --no-install-recommends gcc-aarch64-linux-gnu -y >/dev/null && 
+            aarch64-linux-gnu-gcc --version | head -1 | awk '{print \$4}' | sed 's/)//'
           ")
           echo "expected_gcc=${EXPECTED_GCC_VERSION}" >> $GITHUB_OUTPUT
 
       - name: Download and Extract Kernel Source
         run: |
           TARGET_KERNEL_VERSION="${{ github.event.inputs.target_kernel_version }}"
-          # 自动解析主版本号，例如 6.18.3 -> 6, 5.15 -> 5
           KERNEL_MAJOR_X="${TARGET_KERNEL_VERSION%%.*}"
           KERNEL_TAR_URL="https://www.kernel.org/pub/linux/kernel/v${KERNEL_MAJOR_X}.x/linux-${TARGET_KERNEL_VERSION}.tar.xz"
           
-          echo "Downloading Kernel v${TARGET_KERNEL_VERSION} from ${KERNEL_TAR_URL}..."
+          echo "Downloading Kernel v${TARGET_KERNEL_VERSION}..."
           wget -q -O linux-source.tar.xz "${KERNEL_TAR_URL}"
-          
           mkdir -p linux-source
-          echo "Extracting kernel source..."
           tar -xJf linux-source.tar.xz -C linux-source --strip-components=1
           rm linux-source.tar.xz
 
-      - name: Create Build Script
+      - name: Create Cross-Build Script
         run: |
           cat << 'EOF' > build_script.sh
           set -e
+          # 1. 安装交叉编译工具链 (x86_64 运行，产出 arm64)
           apt-get update -qq
           apt-get install -qq -y \
             build-essential bc bison flex libssl-dev libelf-dev \
             ccache git dwarves libncurses-dev kmod xz-utils rsync \
             debhelper config-package-dev curl libdw-dev \
             python3-minimal python3-dev libcap-dev debianutils \
-            fakeroot kmod
+            fakeroot gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
 
-          ACTUAL_GCC=$(gcc --version | head -1 | awk '{print $4}' | sed 's/)//')
+          # 2. 校验交叉编译器版本
+          ACTUAL_GCC=$(aarch64-linux-gnu-gcc --version | head -1 | awk '{print $4}' | sed 's/)//')
+          echo "Actual Cross-GCC: $ACTUAL_GCC | Expected: $EXPECTED_GCC"
           if [ "$ACTUAL_GCC" != "$EXPECTED_GCC" ]; then
-            echo "ABI Mismatch! Actual: $ACTUAL_GCC, Expected: $EXPECTED_GCC"
+            echo "ABI Mismatch Error!"
             exit 1
           fi
 
+          # 3. 内核配置
           cd /workspace/linux-source
-          # 下载 Armbian 配置蓝本
           curl -sLo .config https://raw.githubusercontent.com/armbian/build/main/config/kernel/linux-rockchip64-edge.config
+          
+          # 显式指定架构执行配置
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
           
           make olddefconfig
           ./scripts/config --enable CONFIG_DRM_ACCEL_ROCKET
@@ -89,27 +91,34 @@ jobs:
           ./scripts/config --set-str CONFIG_LOCALVERSION "-rockchip-mainline"
           make olddefconfig
 
+          # 4. 执行交叉编译
           export KBUILD_BUILD_USER=runner
           export KBUILD_BUILD_HOST=github-actions
           export DEB_BUILD_OPTIONS="nostrip nodbg"
           
-          make -j$(nproc) bindeb-pkg KDEB_PKGVERSION=$(date +%Y%m%d)-armbian-edge KDEB_COMPRESS=xz
+          # 交叉编译 bindeb-pkg
+          make -j$(nproc) bindeb-pkg \
+            ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            KDEB_PKGVERSION=$(date +%Y%m%d)-armbian-edge \
+            KDEB_COMPRESS=xz
           EOF
           chmod +x build_script.sh
 
-      - name: Run Build in Docker
+      - name: Run Cross-Build in x86_64 Docker
         run: |
+          # 注意：这里不再指定 --platform linux/arm64，而是使用默认的 x86_64 镜像
+          # 这样会直接跑在宿主机 CPU 上，速度极快
           docker run --rm --privileged \
-            --platform linux/arm64 \
             -v ${{ github.workspace }}:/workspace \
             -w /workspace \
             -e EXPECTED_GCC="${{ steps.gcc-check.outputs.expected_gcc }}" \
             -e DEBIAN_FRONTEND=noninteractive \
-            arm64v8/ubuntu:"${{ github.event.inputs.ubuntu-version }}" /bin/bash /workspace/build_script.sh
+            ubuntu:"${{ github.event.inputs.ubuntu-version }}" /bin/bash /workspace/build_script.sh
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: linux-kernel-${{ github.event.inputs.target_kernel_version }}-${{ github.event.inputs.ubuntu-version }}
+          name: linux-kernel-${{ github.event.inputs.target_kernel_version }}-cross-compiled
           path: ./*.deb
           retention-days: 90
