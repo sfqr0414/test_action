@@ -1,8 +1,12 @@
-name: Build Mainline Kernel (OP5 Max 6.19 Hybrid)
+name: Build Mainline Kernel (OP5 Max 6.19 Hybrid-Master)
 
 on:
   workflow_dispatch:
     inputs:
+      ubuntu-version:
+        description: 'Ubuntu Image Version'
+        required: true
+        default: '24.04'
       target_kernel_version:
         description: 'Kernel Version (e.g., 6.19)'
         required: true
@@ -20,6 +24,13 @@ jobs:
           sudo docker image prune -a -f
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell /usr/share/swift
 
+      - name: Check GCC Version on Host
+        id: gcc-check
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y gcc-aarch64-linux-gnu
+          echo "expected_gcc=$(aarch64-linux-gnu-gcc --version | head -1 | awk '{print $4}' | sed 's/)//')" >> $GITHUB_OUTPUT
+
       - name: Fetch Kernel Source (Tarball with Git Fallback)
         env:
           VERSION: ${{ github.event.inputs.target_kernel_version }}
@@ -27,7 +38,7 @@ jobs:
           MAJOR=$(echo $VERSION | cut -d. -f1)
           URL="https://www.kernel.org/pub/linux/kernel/v${MAJOR}.x/linux-${VERSION}.tar.xz"
           
-          echo "Step 1: 尝试探测 Tarball 资源 -> $URL"
+          echo "Step 1: 尝试探测 Tarball -> $URL"
           if wget -q --spider "$URL"; then
               echo "资源存在，开始高速下载 Tarball..."
               wget -q -O src.tar.xz "$URL"
@@ -35,11 +46,11 @@ jobs:
               tar -xJf src.tar.xz -C linux-source --strip-components=1
               rm src.tar.xz
           else
-              echo "Step 1 失败 (资源未发布)，执行 Step 2: 浅克隆 Git 仓库 (v${VERSION})"
+              echo "Step 1 失败，执行 Step 2: 浅克隆 Git 仓库 (v${VERSION})"
               TAG="v${VERSION}"
               git clone --depth 1 --branch "$TAG" https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git linux-source || \
               {
-                echo "警告: 未找到标签 $TAG，尝试克隆 master 分支..."
+                echo "未找到标签，拉取 master 分支"
                 git clone --depth 1 https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git linux-source
               }
           fi
@@ -48,40 +59,73 @@ jobs:
         run: |
           cat << 'EOF' > build_script.sh
           set -e
-          apt-get update -qq && apt-get install -qq -y build-essential bc bison flex libssl-dev libelf-dev ccache dwarves libncurses-dev rsync debhelper config-package-dev curl gcc-aarch64-linux-gnu git
+          
+          # 1. 严格遵循你提供的安装列表
+          apt-get update -qq
+          apt-get install -qq -y \
+            build-essential bc bison flex libssl-dev libelf-dev \
+            ccache git dwarves libncurses-dev kmod xz-utils rsync \
+            debhelper config-package-dev curl libdw-dev \
+            python3-minimal python3-dev libcap-dev debianutils \
+            fakeroot gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
 
+          # 2. 版本强校验 (保持不变)
+          ACTUAL_GCC=$(aarch64-linux-gnu-gcc --version | head -1 | awk '{print $4}' | sed 's/)//')
+          echo "Actual Cross-GCC: $ACTUAL_GCC | Expected: $EXPECTED_GCC"
+          if [ "$ACTUAL_GCC" != "$EXPECTED_GCC" ]; then
+            echo "ABI Mismatch Error!"
+            exit 1
+          fi
+
+          # 3. 内核配置
           cd /workspace/linux-source
           curl -sLo .config https://raw.githubusercontent.com/armbian/build/main/config/kernel/linux-rockchip64-edge.config
           
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           
-          # --- [核心：GPU & HDMI 修复] ---
-          ./scripts/config --enable CONFIG_DRM_PANTHOR
-          ./scripts/config --enable CONFIG_PHY_ROCKCHIP_SAMSUNG_HDPTX
-          ./scripts/config --enable CONFIG_DRM_ROCKCHIP_DW_HDMI_QP
+          make olddefconfig
           
-          # --- [你的目标配置：模块兼容性与调试优化] ---
+          # --- [保留你的目标配置] ---
           ./scripts/config --enable CONFIG_DRM_ACCEL_ROCKET
           ./scripts/config --enable CONFIG_MODVERSIONS
           ./scripts/config --enable CONFIG_MODULE_SRCVERSION_ALL
           ./scripts/config --disable CONFIG_DEBUG_INFO
           ./scripts/config --disable CONFIG_DEBUG_INFO_BTF
           
-          # --- [核心：Samba 响应优化] ---
+          # --- [集成 Panthor GPU & Samba 优化] ---
+          ./scripts/config --enable CONFIG_DRM_PANTHOR
+          ./scripts/config --enable CONFIG_PHY_ROCKCHIP_SAMSUNG_HDPTX
+          ./scripts/config --enable CONFIG_DRM_ROCKCHIP_DW_HDMI_QP
           ./scripts/config --enable CONFIG_CIFS_SMB_DIRECT
           
-          # --- [名称简化] ---
+          # --- [名称定义] ---
           ./scripts/config --set-str CONFIG_LOCALVERSION "-preview"
           
           make olddefconfig
-          make -j$(nproc) bindeb-pkg KDEB_PKGVERSION=$(date +%Y%m%d)
+
+          # 4. 执行交叉编译并强制打包 (完全遵循你的参数)
+          export KBUILD_BUILD_USER=runner
+          export KBUILD_BUILD_HOST=github-actions
+          export DEB_BUILD_OPTIONS="nostrip nodbg"
+          
+          make -j$(nproc) bindeb-pkg \
+            ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            KDEB_PKGVERSION=$(date +%Y%m%d)-armbian-edge \
+            KDEB_COMPRESS=xz \
+            DPKG_FLAGS="-d"
           EOF
           chmod +x build_script.sh
 
-      - name: Run Build in Docker
+      - name: Run Build in x86_64 Docker
         run: |
-          docker run --rm -v ${{ github.workspace }}:/workspace -w /workspace ubuntu:24.04 /bin/bash /workspace/build_script.sh
+          docker run --rm --privileged \
+            -v ${{ github.workspace }}:/workspace \
+            -w /workspace \
+            -e EXPECTED_GCC="${{ steps.gcc-check.outputs.expected_gcc }}" \
+            -e DEBIAN_FRONTEND=noninteractive \
+            ubuntu:"${{ github.event.inputs.ubuntu-version }}" /bin/bash /workspace/build_script.sh
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
