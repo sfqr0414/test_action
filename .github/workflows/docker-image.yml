@@ -17,19 +17,13 @@ jobs:
       - name: Mirror Ubuntu 22.04-25.10 to GHCR
         run: |
           UBUNTU_VERSIONS=(
-            "22.04"
-            "22.10"
-            "23.04"
-            "23.10"
-            "24.04"
-            "24.10"
-            "25.04"
-            "25.10"
+            "22.04" "22.10" "23.04" "23.10"
+            "24.04" "24.10" "25.04" "25.10"
           )
 
           for VER in "${UBUNTU_VERSIONS[@]}"; do
             echo "===== Mirroring Ubuntu $VER ====="
-            docker pull ubuntu:$VER
+            docker pull --platform=linux/amd64 ubuntu:$VER
             docker tag ubuntu:$VER ghcr.io/${{ secrets.GHCR_USERNAME }}/ubuntu-rockchip:$VER
             docker push ghcr.io/${{ secrets.GHCR_USERNAME }}/ubuntu-rockchip:$VER
           done
@@ -38,16 +32,10 @@ jobs:
       - name: Test pull all mirrored images
         run: |
           UBUNTU_VERSIONS=(
-            "22.04"
-            "22.10"
-            "23.04"
-            "23.10"
-            "24.04"
-            "24.10"
-            "25.04"
-            "25.10"
+            "22.04" "22.10" "23.04" "23.10"
+            "24.04" "24.10" "25.04" "25.10"
           )
-
+          
           for VER in "${UBUNTU_VERSIONS[@]}"; do
             echo "===== Testing pull Ubuntu $VER from GHCR ====="
             docker rmi ghcr.io/${{ secrets.GHCR_USERNAME }}/ubuntu-rockchip:$VER || true
