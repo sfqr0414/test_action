@@ -31,7 +31,7 @@ jobs:
             - <<EOF
             FROM ubuntu:$VER
             EOF
-         done
+          done
             
       # 每个版本都单独拉取验证一遍
       - name: Test pull all mirrored images
