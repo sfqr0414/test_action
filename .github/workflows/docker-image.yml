@@ -6,10 +6,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout 代码
-        uses: actions/checkout@v4
-
-      # 新增：自动登录 GHCR
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
@@ -17,16 +13,44 @@ jobs:
           username: ${{ secrets.GHCR_USERNAME }}
           password: ${{ secrets.GHCR_PAT }}
 
-      # 新增：转存 Ubuntu 25.04 镜像到自己的 GHCR
-      - name: Mirror Ubuntu 25.04 to GHCR
+      # 批量转存 Ubuntu 22.04 ~ 25.10
+      - name: Mirror Ubuntu 22.04-25.10 to GHCR
         run: |
-          # 拉取 Docker Hub 镜像（若已转存过，会复用本地缓存）
-          docker pull ubuntu:25.04
-          # 打 GHCR 标签
-          docker tag ubuntu:25.04 ghcr.io/${{ secrets.GHCR_USERNAME }}/ubuntu-rockchip:25.04
-          # 推送至 GHCR（已存在则覆盖，无重复推送限制）
-          docker push ghcr.io/${{ secrets.GHCR_USERNAME }}/ubuntu-rockchip:25.04
+          UBUNTU_VERSIONS=(
+            "22.04"
+            "22.10"
+            "23.04"
+            "23.10"
+            "24.04"
+            "24.10"
+            "25.04"
+            "25.10"
+          )
 
-      # 后续执行你的内核构建脚本
-      - name: 构建内核
-        run: bash ./scripts/build-kernel.sh
+          for VER in "${UBUNTU_VERSIONS[@]}"; do
+            echo "===== Mirroring Ubuntu $VER ====="
+            docker pull ubuntu:$VER
+            docker tag ubuntu:$VER ghcr.io/${{ secrets.GHCR_USERNAME }}/ubuntu-rockchip:$VER
+            docker push ghcr.io/${{ secrets.GHCR_USERNAME }}/ubuntu-rockchip:$VER
+          done
+
+      # 每个版本都单独拉取验证一遍
+      - name: Test pull all mirrored images
+        run: |
+          UBUNTU_VERSIONS=(
+            "22.04"
+            "22.10"
+            "23.04"
+            "23.10"
+            "24.04"
+            "24.10"
+            "25.04"
+            "25.10"
+          )
+
+          for VER in "${UBUNTU_VERSIONS[@]}"; do
+            echo "===== Testing pull Ubuntu $VER from GHCR ====="
+            docker rmi ghcr.io/${{ secrets.GHCR_USERNAME }}/ubuntu-rockchip:$VER || true
+            docker pull ghcr.io/${{ secrets.GHCR_USERNAME }}/ubuntu-rockchip:$VER
+            echo "✅ Ubuntu $VER: pull OK"
+          done
