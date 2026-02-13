@@ -16,36 +16,45 @@ jobs:
           username: ${{ secrets.GHCR_USERNAME }}
           password: ${{ secrets.GHCR_PAT }}
 
-      # 🔥 彻底删除 GHCR 上所有旧的 ubuntu-rockchip 镜像
-      - name: Delete all old ubuntu-rockchip images
+      # 🔥 彻底删除 GHCR 上的 ubuntu-rockchip 包（所有版本 + 包本身）
+      - name: Delete entire ubuntu-rockchip package
         run: |
           USERNAME=${{ secrets.GHCR_USERNAME }}
           PACKAGE="ubuntu-rockchip"
           TOKEN=${{ secrets.GHCR_PAT }}
 
-          # 获取所有版本 ID
-          VERSIONS=$(curl -s \
-            -H "Authorization: token $TOKEN" \
-            -H "Accept: application/vnd.github.v3+json" \
-            https://api.github.com/users/$USERNAME/packages/container/$PACKAGE/versions \
-            | jq -r '.[].id')
-
-          if [ -z "$VERSIONS" ]; then
-            echo "✅ No old ubuntu-rockchip images found"
-            exit 0
-          fi
-
-          # 循环删除所有版本
-          for VID in $VERSIONS; do
-            echo "🗑 Deleting old image version: $VID"
-            curl -s -X DELETE \
+          echo "=== 1. 删除 ubuntu-rockchip 所有版本（分页全量删除）==="
+          PAGE=1
+          while true; do
+            VERSION_IDS=$(curl -s -L \
               -H "Authorization: token $TOKEN" \
-              https://api.github.com/users/$USERNAME/packages/container/$PACKAGE/versions/$VID
-          done
-          echo "✅ All old ubuntu-rockchip images deleted"
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/users/$USERNAME/packages/container/$PACKAGE/versions?per_page=100&page=$PAGE" \
+              | jq -r '.[].id')
 
-      # 批量同步 Ubuntu 22.04 ~ 25.10 到新的 ubuntu 仓库
-      - name: Mirror Ubuntu 22.04-25.10 to GHCR (new ubuntu)
+            if [ -z "$VERSION_IDS" ] || [ "$VERSION_IDS" == "null" ]; then
+              echo "✅ 所有版本已删完"
+              break
+            fi
+
+            for VID in $VERSION_IDS; do
+              echo "🗑 删除版本: $VID"
+              curl -s -X DELETE \
+                -H "Authorization: token $TOKEN" \
+                "https://api.github.com/users/$USERNAME/packages/container/$PACKAGE/versions/$VID"
+            done
+
+            PAGE=$((PAGE+1))
+          done
+
+          echo "=== 2. 删除整个 ubuntu-rockchip 包（页面彻底消失）==="
+          curl -s -X DELETE \
+            -H "Authorization: token $TOKEN" \
+            "https://api.github.com/users/$USERNAME/packages/container/$PACKAGE"
+          echo "✅ ubuntu-rockchip 包已彻底删除"
+
+      # 批量同步 Ubuntu 22.04 ~ 25.10 到新的 ubuntu 包
+      - name: Mirror Ubuntu 22.04-25.10 to GHCR
         run: |
           UBUNTU_VERSIONS=(
             "22.04" "22.10" "23.04" "23.10"
@@ -53,15 +62,15 @@ jobs:
           )
 
           for VER in "${UBUNTU_VERSIONS[@]}"; do
-            echo "===== Mirroring Ubuntu $VER ====="
+            echo "===== 同步 Ubuntu $VER ====="
             docker buildx imagetools create \
               --tag ghcr.io/${{ secrets.GHCR_USERNAME }}/ubuntu:$VER \
               docker.io/library/ubuntu:$VER
-            echo "✅ Mirrored: ghcr.io/${{ secrets.GHCR_USERNAME }}/ubuntu:$VER"
+            echo "✅ 已同步: ghcr.io/${{ secrets.GHCR_USERNAME }}/ubuntu:$VER"
           done
             
-      # 每个版本都单独拉取验证，确保新镜像可用
-      - name: Test pull all new ubuntu images
+      # 每个版本都拉取验证
+      - name: Test pull all ubuntu images
         run: |
           UBUNTU_VERSIONS=(
             "22.04" "22.10" "23.04" "23.10"
@@ -69,8 +78,8 @@ jobs:
           )
           
           for VER in "${UBUNTU_VERSIONS[@]}"; do
-            echo "===== Testing pull Ubuntu $VER from GHCR ====="
+            echo "===== 测试拉取 Ubuntu $VER ====="
             docker rmi ghcr.io/${{ secrets.GHCR_USERNAME }}/ubuntu:$VER || true
             docker pull ghcr.io/${{ secrets.GHCR_USERNAME }}/ubuntu:$VER
-            echo "✅ Ubuntu $VER: pull OK"
+            echo "✅ Ubuntu $VER 拉取成功"
           done
