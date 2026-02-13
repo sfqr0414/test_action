@@ -1,3 +1,4 @@
+name: Store Docker Image
 on:
   workflow_dispatch:
 
