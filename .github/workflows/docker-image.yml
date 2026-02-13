@@ -16,8 +16,36 @@ jobs:
           username: ${{ secrets.GHCR_USERNAME }}
           password: ${{ secrets.GHCR_PAT }}
 
-      # 批量转存 Ubuntu 22.04 ~ 25.10
-      - name: Mirror Ubuntu 22.04-25.10 to GHCR
+      # 🔥 彻底删除 GHCR 上所有旧的 ubuntu-rockchip 镜像
+      - name: Delete all old ubuntu-rockchip images
+        run: |
+          USERNAME=${{ secrets.GHCR_USERNAME }}
+          PACKAGE="ubuntu-rockchip"
+          TOKEN=${{ secrets.GHCR_PAT }}
+
+          # 获取所有版本 ID
+          VERSIONS=$(curl -s \
+            -H "Authorization: token $TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/users/$USERNAME/packages/container/$PACKAGE/versions \
+            | jq -r '.[].id')
+
+          if [ -z "$VERSIONS" ]; then
+            echo "✅ No old ubuntu-rockchip images found"
+            exit 0
+          fi
+
+          # 循环删除所有版本
+          for VID in $VERSIONS; do
+            echo "🗑 Deleting old image version: $VID"
+            curl -s -X DELETE \
+              -H "Authorization: token $TOKEN" \
+              https://api.github.com/users/$USERNAME/packages/container/$PACKAGE/versions/$VID
+          done
+          echo "✅ All old ubuntu-rockchip images deleted"
+
+      # 批量同步 Ubuntu 22.04 ~ 25.10 到新的 ubuntu 仓库
+      - name: Mirror Ubuntu 22.04-25.10 to GHCR (new ubuntu)
         run: |
           UBUNTU_VERSIONS=(
             "22.04" "22.10" "23.04" "23.10"
@@ -27,13 +55,13 @@ jobs:
           for VER in "${UBUNTU_VERSIONS[@]}"; do
             echo "===== Mirroring Ubuntu $VER ====="
             docker buildx imagetools create \
-              --tag ghcr.io/${{ secrets.GHCR_USERNAME }}/ubuntu-rockchip:$VER \
+              --tag ghcr.io/${{ secrets.GHCR_USERNAME }}/ubuntu:$VER \
               docker.io/library/ubuntu:$VER
-              echo "✅ Mirrored: ghcr.io/${{ secrets.GHCR_USERNAME }}/ubuntu-rockchip:$VER"
+            echo "✅ Mirrored: ghcr.io/${{ secrets.GHCR_USERNAME }}/ubuntu:$VER"
           done
             
-      # 每个版本都单独拉取验证一遍
-      - name: Test pull all mirrored images
+      # 每个版本都单独拉取验证，确保新镜像可用
+      - name: Test pull all new ubuntu images
         run: |
           UBUNTU_VERSIONS=(
             "22.04" "22.10" "23.04" "23.10"
@@ -42,7 +70,7 @@ jobs:
           
           for VER in "${UBUNTU_VERSIONS[@]}"; do
             echo "===== Testing pull Ubuntu $VER from GHCR ====="
-            docker rmi ghcr.io/${{ secrets.GHCR_USERNAME }}/ubuntu-rockchip:$VER || true
-            docker pull ghcr.io/${{ secrets.GHCR_USERNAME }}/ubuntu-rockchip:$VER
+            docker rmi ghcr.io/${{ secrets.GHCR_USERNAME }}/ubuntu:$VER || true
+            docker pull ghcr.io/${{ secrets.GHCR_USERNAME }}/ubuntu:$VER
             echo "✅ Ubuntu $VER: pull OK"
           done
