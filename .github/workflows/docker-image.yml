@@ -23,14 +23,9 @@ jobs:
 
           for VER in "${UBUNTU_VERSIONS[@]}"; do
             echo "===== Mirroring Ubuntu $VER ====="
-            docker pull ubuntu:$VER
-            docker buildx build \
-            --platform linux/amd64,linux/arm64 \
-            --tag ghcr.io/${{ secrets.GHCR_USERNAME }}/ubuntu-rockchip:$VER \
-            --push \
-            - <<EOF
-            FROM ubuntu:$VER
-            EOF
+            docker buildx imagetools create \
+            -t ghcr.io/${{ secrets.GHCR_USERNAME }}/ubuntu-rockchip:$VER \
+            docker.io/library/ubuntu:$VER
           done
             
       # 每个版本都单独拉取验证一遍
