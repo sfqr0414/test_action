@@ -9,21 +9,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 1. 生成 100MB 小文件（<2GB）
       - name: Create small file
-        run: dd if=/dev/zero of=small.img bs=1M count=100
+        run: dd if=/dev/urandom of=small.raw bs=1G count=1
 
-      # 2. 生成 3GB 大文件（>2GB）
       - name: Create large file
-        run: dd if=/dev/zero of=large.img bs=1M count=3072
+        run: dd if=/dev/urandom of=large.raw bs=1G count=3
 
-      # 3. 打包 ZIP
       - name: Zip files
         run: |
-          zip small.zip small.img
-          zip large.zip large.img
+          zip small.zip small.raw
+          zip large.zip large.raw
 
-      # 4. 上传小文件（不分卷）
+      - name: Validate small zip
+        run: |
+          size=$(stat -c %s small.zip)
+          if [ $size -ge 2147483648 ]; then
+            exit 1
+          fi
+
+      - name: Validate large zip
+        run: |
+          size=$(stat -c %s large.zip)
+          if [ $size -lt 2147483648 ]; then
+            exit 1
+          fi
+
       - name: Upload small zip
         uses: sfqr0414/release-upload-zip@v1
         with:
@@ -31,7 +41,6 @@ jobs:
           release_tag: test-v1
           github_token: ${{ secrets.GHCR_PAT }}
 
-      # 5. 上传大文件（自动分卷）
       - name: Upload large zip
         uses: sfqr0414/release-upload-zip@v1
         with:
@@ -39,7 +48,9 @@ jobs:
           release_tag: test-v1
           github_token: ${{ secrets.GHCR_PAT }}
 
-      # 6. 下载还原小文件
+      - name: Clean local files
+        run: rm -rf *.raw *.zip *.part-*
+
       - name: Restore small zip
         id: restore-small
         uses: sfqr0414/release-restore-zip@v1
@@ -48,7 +59,6 @@ jobs:
           zip_name: small.zip
           github_token: ${{ github.token }}
 
-      # 7. 下载还原大文件
       - name: Restore large zip
         id: restore-large
         uses: sfqr0414/release-restore-zip@v1
@@ -57,8 +67,8 @@ jobs:
           zip_name: large.zip
           github_token: ${{ github.token }}
 
-      # 8. 输出结果
       - name: Show status
         run: |
           echo "small_restore_status: ${{ steps.restore-small.outputs.status }}"
           echo "large_restore_status: ${{ steps.restore-large.outputs.status }}"
+          ls -lh *.zip
