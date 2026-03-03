@@ -25,7 +25,7 @@ jobs:
 
       # 4. 上传小文件（不分卷）
       - name: Upload small zip
-        uses: sfqr9414/release-upload-zip@v1
+        uses: sfqr0414/release-upload-zip@v1
         with:
           zip_path: small.zip
           release_tag: test-v1
@@ -33,7 +33,7 @@ jobs:
 
       # 5. 上传大文件（自动分卷）
       - name: Upload large zip
-        uses: sfqr9414/release-upload-zip@v1
+        uses: sfqr0414/release-upload-zip@v1
         with:
           zip_path: large.zip
           release_tag: test-v1
@@ -42,7 +42,7 @@ jobs:
       # 6. 下载还原小文件
       - name: Restore small zip
         id: restore-small
-        uses: sfqr9414/release-restore-zip@v1
+        uses: sfqr0414/release-restore-zip@v1
         with:
           release_tag: test-v1
           zip_name: small.zip
@@ -51,7 +51,7 @@ jobs:
       # 7. 下载还原大文件
       - name: Restore large zip
         id: restore-large
-        uses: sfqr9414/release-restore-zip@v1
+        uses: sfqr0414/release-restore-zip@v1
         with:
           release_tag: test-v1
           zip_name: large.zip
