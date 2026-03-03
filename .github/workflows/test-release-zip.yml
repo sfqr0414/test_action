@@ -8,67 +8,52 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-
-      - name: Create small file
-        run: dd if=/dev/urandom of=small.raw bs=1G count=1
-
-      - name: Create large file
-        run: dd if=/dev/urandom of=large.raw bs=1G count=3
-
-      - name: Zip files
-        run: |
+      - run: dd if=/dev/urandom of=small.raw bs=1G count=1
+        shell: bash
+      - run: dd if=/dev/urandom of=large.raw bs=1G count=3
+        shell: bash
+      - run: |
           zip small.zip small.raw
           zip large.zip large.raw
-
-      - name: Validate small zip
-        run: |
+        shell: bash
+      - run: |
           size=$(stat -c %s small.zip)
           if [ $size -ge 2147483648 ]; then
             exit 1
           fi
-
-      - name: Validate large zip
-        run: |
+        shell: bash
+      - run: |
           size=$(stat -c %s large.zip)
           if [ $size -lt 2147483648 ]; then
             exit 1
           fi
-
-      - name: Upload small zip
-        uses: sfqr0414/release-upload-zip@v1
+        shell: bash
+      - uses: sfqr0414/release-upload-zip@v1
         with:
           zip_path: small.zip
           release_tag: test-v1
           github_token: ${{ secrets.GHCR_PAT }}
-
-      - name: Upload large zip
-        uses: sfqr0414/release-upload-zip@v1
+      - uses: sfqr0414/release-upload-zip@v1
         with:
           zip_path: large.zip
           release_tag: test-v1
           github_token: ${{ secrets.GHCR_PAT }}
-
-      - name: Clean local files
-        run: rm -rf *.raw *.zip *.part-*
-
-      - name: Restore small zip
-        id: restore-small
+      - run: rm -rf *.raw *.zip *.part-*
+        shell: bash
+      - id: restore-small
         uses: sfqr0414/release-restore-zip@v1
         with:
           release_tag: test-v1
           zip_name: small.zip
           github_token: ${{ github.token }}
-
-      - name: Restore large zip
-        id: restore-large
+      - id: restore-large
         uses: sfqr0414/release-restore-zip@v1
         with:
           release_tag: test-v1
           zip_name: large.zip
           github_token: ${{ github.token }}
-
-      - name: Show status
-        run: |
+      - run: |
           echo "small_restore_status: ${{ steps.restore-small.outputs.status }}"
           echo "large_restore_status: ${{ steps.restore-large.outputs.status }}"
           ls -lh *.zip
+        shell: bash
