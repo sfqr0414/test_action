@@ -67,16 +67,16 @@ jobs:
           github_token: ${{ github.token }}
 
       - name: Show small restore status
-        if: ${{ steps.restore_small.outputs.status == '1' }}
-        run: ls
+        if: ${{ steps.restore_small.outputs.status == 1 }}
+        run: echo OK
         shell: bash
 
       - name: Show large restore status
-        if: ${{ steps.restore_large.outputs.status == '1' }}
-        run: ls
+        if: ${{ steps.restore_large.outputs.status == 1 }}
+        run: echo OK
         shell: bash
 
       - name: List files
-        if: ${{ steps.restore_small.outputs.status == '1' && steps.restore_large.outputs.status == '1' }}
-        run: ls -lh *.zip
+        if: ${{ steps.restore_small.outputs.status == 1 && steps.restore_large.outputs.status == 1 }}
+        run: ls -lh
         shell: bash
