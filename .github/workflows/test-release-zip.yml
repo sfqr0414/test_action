@@ -81,20 +81,22 @@ jobs:
           ls -lh restore/
         shell: bash
 
-      - name: Compare SHA256 hash (small)
+      - name: Compare files (small)
         run: |
-          sha256sum source/small.raw > source_small.sha256
-          sha256sum restore/small.raw > restore_small.sha256
-          diff source_small.sha256 restore_small.sha256
-          echo "Small hash compare result: $?"
+          if ! cmp -s source/small.raw restore/small.raw; then
+            echo "::error::Small files differ"
+            exit 1
+          fi
+          echo "Small files identical"
         shell: bash
 
-      - name: Compare SHA256 hash (large)
+      - name: Compare files (large)
         run: |
-          sha256sum source/large.raw > source_large.sha256
-          sha256sum restore/large.raw > restore_large.sha256
-          diff source_large.sha256 restore_large.sha256
-          echo "Large hash compare result: $?"
+          if ! cmp -s source/large.raw restore/large.raw; then
+            echo "::error::Large files differ"
+            exit 1
+          fi
+          echo "Large files identical"
         shell: bash
 
       - name: Show small restore status
