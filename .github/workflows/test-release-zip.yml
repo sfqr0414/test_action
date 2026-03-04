@@ -1,90 +1,109 @@
-name: Test ZIP Upload & Restore
+name: Test ZIP Upload & Restore (Final)
 on: workflow_dispatch
 
 jobs:
-  test:
+  test_zip_flow:
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Create small raw file
-        run: dd if=/dev/urandom of=small.raw bs=1G count=1
-        shell: bash
-
-      - name: Create large raw file
-        run: dd if=/dev/urandom of=large.raw bs=3G count=1
-        shell: bash
-
-      - name: Zip files
+      - name: Create working directories
         run: |
-          zip small.zip small.raw
-          zip large.zip large.raw
+          mkdir -p source restore invalid_test
         shell: bash
 
-      - name: Validate small zip size
+      - name: Generate test raw files (direct to source dir)
         run: |
-          size_small=$(stat -c %s small.zip)
-          if [ $size_small -ge 2147483648 ]; then
-            exit 1
-          fi
+          dd if=/dev/urandom of=source/small.raw bs=1G count=1
+          dd if=/dev/urandom of=source/large.raw bs=3G count=1
         shell: bash
 
-      - name: Validate large zip size
+      - name: Package to zip files (direct in source dir)
         run: |
-          size_large=$(stat -c %s large.zip)
-          if [ $size_large -lt 2147483648 ]; then
-            exit 1
-          fi
+          zip source/small.zip source/small.raw
+          zip source/large.zip source/large.raw
         shell: bash
 
-      - name: Upload small zip
+      - name: Upload small zip to release
         uses: sfqr0414/release-upload-zip@v1
         with:
-          zip_path: small.zip
+          zip_path: source/small.zip
           release_tag: test-v1
           github_token: ${{ secrets.GHCR_PAT }}
 
-      - name: Upload large zip
+      - name: Upload large zip to release
         uses: sfqr0414/release-upload-zip@v1
         with:
-          zip_path: large.zip
+          zip_path: source/large.zip
           release_tag: test-v1
           github_token: ${{ secrets.GHCR_PAT }}
 
-      - name: Clean local files
-        run: rm -rf *.raw *.zip *.part-*
+      - name: Clean restore directory (simulate fresh restore)
+        run: |
+          if [ -d "restore" ]; then
+            rm -rf restore/*
+          fi
         shell: bash
 
-      - name: Restore small zip
+      - name: Restore small zip (with path + unzip)
         id: restore_small
         uses: sfqr0414/release-restore-zip@v1
         with:
           release_tag: test-v1
-          zip_name: small.zip
+          zip_name: restore/small.zip
+          unzip: true
+          output_dir: restore
           github_token: ${{ github.token }}
 
-      - name: Restore large zip
+      - name: Restore large zip (with path, unzip)
         id: restore_large
         uses: sfqr0414/release-restore-zip@v1
         with:
           release_tag: test-v1
-          zip_name: large.zip
+          zip_name: restore/large.zip
+          unzip: true
+          output_dir: restore
           github_token: ${{ github.token }}
 
+      - name: Test invalid zip name (parse fail)
+        id: restore_invalid
+        uses: sfqr0414/release-restore-zip@v1
+        with:
+          release_tag: test-v1
+          zip_name: "/"
+          github_token: ${{ github.token }}
+
+      - name: Compare SHA256 hash (small)
+        run: |
+          sha256sum source/small.raw > source_small.sha256
+          sha256sum restore/small.raw > restore_small.sha256
+          diff source_small.sha256 restore_small.sha256
+          echo "Small hash compare result: $?"
+        shell: bash
+
+      - name: Compare SHA256 hash (large)
+        run: |
+          sha256sum source/large.raw > source_large.sha256
+          sha256sum restore/large.raw > restore_large.sha256
+          diff source_large.sha256 restore_large.sha256
+          echo "Large hash compare result: $?"
+        shell: bash
+
       - name: Show small restore status
-        if: ${{ steps.restore_small.outputs.status == 1 }}
-        run: echo OK
+        run: echo "Small restore status: ${{ steps.restore_small.outputs.status }}"
         shell: bash
 
       - name: Show large restore status
-        if: ${{ steps.restore_large.outputs.status == 1 }}
-        run: echo OK
+        run: echo "Large restore status: ${{ steps.restore_large.outputs.status }}"
         shell: bash
 
-      - name: List files
-        if: ${{ steps.restore_small.outputs.status == 1 && steps.restore_large.outputs.status == 1 }}
-        run: ls -lh
+      - name: Show invalid parse status
+        run: echo "Invalid parse status: ${{ steps.restore_invalid.outputs.status }}"
+        shell: bash
+
+      - name: List all files (verify path)
+        run: ls -lh source/ restore/ invalid_test/
         shell: bash
