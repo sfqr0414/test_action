@@ -1,4 +1,4 @@
-name: Test ZIP Upload & Restore (Final)
+name: Test ZIP Upload & Restore
 on: workflow_dispatch
 
 jobs:
@@ -18,7 +18,7 @@ jobs:
       - name: Generate test raw files
         run: |
           dd if=/dev/urandom of=source/small.raw bs=1G count=1
-          dd if=/dev/urandom of=source/large.raw bs=3G count=1
+          dd if=/dev/urandom of=source/large.raw bs=6G count=1
         shell: bash
 
       - name: Package to zip files
