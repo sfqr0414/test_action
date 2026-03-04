@@ -27,13 +27,17 @@ jobs:
       - name: Validate small zip size
         run: |
           size_small=$(stat -c %s small.zip)
-          [ $size_small -ge 2147483648 ] && exit 1
+          if [ $size_small -ge 2147483648 ]; then
+            exit 1
+          fi
         shell: bash
 
       - name: Validate large zip size
         run: |
           size_large=$(stat -c %s large.zip)
-          [ $size_large -lt 2147483648 ] && exit 1
+          if [ $size_large -lt 2147483648 ]; then
+            exit 1
+          fi
         shell: bash
 
       - name: Upload small zip
