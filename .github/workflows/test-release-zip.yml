@@ -93,17 +93,21 @@ jobs:
         shell: bash
 
       - name: Show small restore status
-        run: echo "Small restore status: ${{ steps.restore_small.outputs.status }}"
+        run: |
+          echo "Small restore status: ${{ steps.restore_small.outputs.status }}"
         shell: bash
 
       - name: Show large restore status
-        run: echo "Large restore status: ${{ steps.restore_large.outputs.status }}"
+        run: |
+          echo "Large restore status: ${{ steps.restore_large.outputs.status }}"
         shell: bash
 
       - name: Show invalid parse status
-        run: echo "Invalid parse status: ${{ steps.restore_invalid.outputs.status }}"
+        run: |
+          echo "Invalid parse status: ${{ steps.restore_invalid.outputs.status }}"
         shell: bash
 
       - name: List all files (verify path)
-        run: ls -lh source/ restore/ invalid_test/
+        run: |
+          ls -lh source/ restore/ invalid_test/
         shell: bash
