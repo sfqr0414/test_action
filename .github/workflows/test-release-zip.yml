@@ -15,16 +15,16 @@ jobs:
           mkdir -p source restore invalid_test
         shell: bash
 
-      - name: Generate test raw files (direct to source dir)
+      - name: Generate test raw files
         run: |
           dd if=/dev/urandom of=source/small.raw bs=1G count=1
           dd if=/dev/urandom of=source/large.raw bs=3G count=1
         shell: bash
 
-      - name: Package to zip files (direct in source dir)
+      - name: Package to zip files
         run: |
-          zip source/small.zip source/small.raw
-          zip source/large.zip source/large.raw
+          zip -j source/small.zip source/small.raw
+          zip -j source/large.zip source/large.raw
         shell: bash
 
       - name: Upload small zip to release
@@ -41,14 +41,14 @@ jobs:
           release_tag: test-v1
           github_token: ${{ secrets.GHCR_PAT }}
 
-      - name: Clean restore directory (simulate fresh restore)
+      - name: Clean restore directory
         run: |
           if [ -d "restore" ]; then
             rm -rf restore/*
           fi
         shell: bash
 
-      - name: Restore small zip (with path + unzip)
+      - name: Restore small zip
         id: restore_small
         uses: sfqr0414/release-restore-zip@v1
         with:
@@ -58,7 +58,7 @@ jobs:
           output_dir: restore
           github_token: ${{ github.token }}
 
-      - name: Restore large zip (with path, unzip)
+      - name: Restore large zip
         id: restore_large
         uses: sfqr0414/release-restore-zip@v1
         with:
@@ -68,13 +68,18 @@ jobs:
           output_dir: restore
           github_token: ${{ github.token }}
 
-      - name: Test invalid zip name (parse fail)
+      - name: Test invalid zip name
         id: restore_invalid
         uses: sfqr0414/release-restore-zip@v1
         with:
           release_tag: test-v1
           zip_name: "/"
           github_token: ${{ github.token }}
+
+      - name: List restore files
+        run: |
+          ls -lh restore/
+        shell: bash
 
       - name: Compare SHA256 hash (small)
         run: |
@@ -107,7 +112,7 @@ jobs:
           echo "Invalid parse status: ${{ steps.restore_invalid.outputs.status }}"
         shell: bash
 
-      - name: List all files (verify path)
+      - name: List all files
         run: |
           ls -lh source/ restore/ invalid_test/
         shell: bash
