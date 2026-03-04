@@ -15,7 +15,7 @@ jobs:
         shell: bash
 
       - name: Create large raw file
-        run: dd if=/dev/urandom of=large.raw bs=1G count=3
+        run: dd if=/dev/urandom of=large.raw bs=3G count=1
         shell: bash
 
       - name: Zip files
@@ -24,11 +24,15 @@ jobs:
           zip large.zip large.raw
         shell: bash
 
-      - name: Validate zip sizes
+      - name: Validate small zip size
         run: |
           size_small=$(stat -c %s small.zip)
-          size_large=$(stat -c %s large.zip)
           [ $size_small -ge 2147483648 ] && exit 1
+        shell: bash
+
+      - name: Validate large zip size
+        run: |
+          size_large=$(stat -c %s large.zip)
           [ $size_large -lt 2147483648 ] && exit 1
         shell: bash
 
