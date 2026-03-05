@@ -1,5 +1,15 @@
 name: Test ZIP Upload & Restore
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+    inputs:
+      run_invalid_test_only:
+        description: 'Only run invalid zip name test'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 jobs:
   test_zip_flow:
@@ -8,14 +18,17 @@ jobs:
       contents: write
     steps:
       - name: Checkout code
+        if: ${{ inputs.run_invalid_test_only == 'false' }}
         uses: actions/checkout@v4
 
       - name: Create working directories
+        if: ${{ inputs.run_invalid_test_only == 'false' }}
         run: |
           mkdir -p source restore invalid_test
         shell: bash
 
       - name: Generate and zip files in parallel
+        if: ${{ inputs.run_invalid_test_only == 'false' }}
         run: |
           {
             dd if=/dev/urandom of=source/small.raw bs=1G count=1
@@ -29,6 +42,7 @@ jobs:
         shell: bash
 
       - name: Upload small zip to release
+        if: ${{ inputs.run_invalid_test_only == 'false' }}
         uses: sfqr0414/release-upload-zip@v1
         with:
           zip_path: source/small.zip
@@ -36,6 +50,7 @@ jobs:
           github_token: ${{ secrets.GHCR_PAT }}
 
       - name: Upload large zip to release
+        if: ${{ inputs.run_invalid_test_only == 'false' }}
         uses: sfqr0414/release-upload-zip@v1
         with:
           zip_path: source/large.zip
@@ -43,6 +58,7 @@ jobs:
           github_token: ${{ secrets.GHCR_PAT }}
 
       - name: Clean restore directory
+        if: ${{ inputs.run_invalid_test_only == 'false' }}
         run: |
           if [ -d "restore" ]; then
             rm -rf restore/*
@@ -50,6 +66,7 @@ jobs:
         shell: bash
 
       - name: Restore small zip
+        if: ${{ inputs.run_invalid_test_only == 'false' }}
         id: restore_small
         uses: sfqr0414/release-restore-zip@v1
         with:
@@ -60,6 +77,7 @@ jobs:
           github_token: ${{ github.token }}
 
       - name: Restore large zip
+        if: ${{ inputs.run_invalid_test_only == 'false' }}
         id: restore_large
         uses: sfqr0414/release-restore-zip@v1
         with:
@@ -79,11 +97,13 @@ jobs:
           github_token: ${{ github.token }}
 
       - name: List restore files
+        if: ${{ inputs.run_invalid_test_only == 'false' }}
         run: |
           ls -lh restore/
         shell: bash
 
       - name: Compare files (small)
+        if: ${{ inputs.run_invalid_test_only == 'false' }}
         run: |
           if ! cmp -s source/small.raw restore/small.raw; then
             echo "::error::Small files differ"
@@ -93,6 +113,7 @@ jobs:
         shell: bash
 
       - name: Compare files (large)
+        if: ${{ inputs.run_invalid_test_only == 'false' }}
         run: |
           if ! cmp -s source/large.raw restore/large.raw; then
             echo "::error::Large files differ"
@@ -102,11 +123,13 @@ jobs:
         shell: bash
 
       - name: Show small restore status
+        if: ${{ inputs.run_invalid_test_only == 'false' }}
         run: |
           echo "Small restore status: ${{ steps.restore_small.outputs.status }}"
         shell: bash
 
       - name: Show large restore status
+        if: ${{ inputs.run_invalid_test_only == 'false' }}
         run: |
           echo "Large restore status: ${{ steps.restore_large.outputs.status }}"
         shell: bash
@@ -117,6 +140,7 @@ jobs:
         shell: bash
 
       - name: List all files
+        if: ${{ inputs.run_invalid_test_only == 'false' }}
         run: |
           ls -lh source/ restore/ invalid_test/
         shell: bash
