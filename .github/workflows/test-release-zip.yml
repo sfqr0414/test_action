@@ -15,16 +15,17 @@ jobs:
           mkdir -p source restore invalid_test
         shell: bash
 
-      - name: Generate test raw files
+      - name: Generate and zip files in parallel
         run: |
-          dd if=/dev/urandom of=source/small.raw bs=1G count=1
-          dd if=/dev/urandom of=source/large.raw bs=1G count=6
-        shell: bash
-
-      - name: Package to zip files
-        run: |
-          zip -j source/small.zip source/small.raw
-          zip -j source/large.zip source/large.raw
+          {
+            dd if=/dev/urandom of=source/small.raw bs=1G count=1
+            zip -j source/small.zip source/small.raw
+          } &
+          {
+            dd if=/dev/urandom of=source/large.raw bs=1G count=6
+            zip -j source/large.zip source/large.raw
+          } &
+          wait
         shell: bash
 
       - name: Upload small zip to release
@@ -53,7 +54,7 @@ jobs:
         uses: sfqr0414/release-restore-zip@v1
         with:
           release_tag: test-v1
-          zip_name: restore/small.zip
+          zip_name: small.zip
           unzip: true
           output_dir: restore
           github_token: ${{ github.token }}
@@ -63,7 +64,7 @@ jobs:
         uses: sfqr0414/release-restore-zip@v1
         with:
           release_tag: test-v1
-          zip_name: restore/large.zip
+          zip_name: large.zip
           unzip: true
           output_dir: restore
           github_token: ${{ github.token }}
