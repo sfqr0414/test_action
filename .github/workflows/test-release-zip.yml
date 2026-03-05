@@ -71,6 +71,7 @@ jobs:
 
       - name: Test invalid zip name
         id: restore_invalid
+        continue-on-error: true
         uses: sfqr0414/release-restore-zip@v1
         with:
           release_tag: test-v1
