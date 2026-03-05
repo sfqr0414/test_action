@@ -18,7 +18,6 @@ jobs:
       contents: write
     steps:
       - name: Checkout code
-        if: ${{ inputs.run_invalid_test_only == 'false' }}
         uses: actions/checkout@v4
 
       - name: Create working directories
