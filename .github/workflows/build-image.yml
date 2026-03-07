@@ -23,10 +23,13 @@ jobs:
           echo "IMG=ubuntu-2604-desktop-arm64-opi5max.img" >> $GITHUB_ENV
           echo "MIRROR=http://ports.ubuntu.com/ubuntu-ports" >> $GITHUB_ENV
 
-      - name: 构建 Ubuntu 26.04 arm64 基础 rootfs
+      - name: 构建 Ubuntu 26.04 arm64 基础 rootfs（CI非交互版）
         run: |
           sudo mmdebstrap \
+            --variant=minbase \
             --architectures=${{ env.ARCH }} \
+            --components=main,restricted,universe,multiverse \
+            --aptopt='-y --quiet' \
             --include=sudo,systemd-sysv,openssh-server,network-manager,iproute2,ca-certificates,nano \
             ${{ env.DISTRO }} \
             ${{ env.ROOTFS }} \
@@ -36,9 +39,9 @@ jobs:
         run: |
           sudo cp /usr/bin/qemu-aarch64-static ${{ env.ROOTFS }}/usr/bin/
 
-      - name: 进入 chroot 配置系统与桌面环境
+      - name: 进入 chroot 配置系统与桌面环境（非交互）
         run: |
-          sudo chroot ${{ env.ROOTFS }} /bin/bash <<-'EOF'
+          sudo chroot ${{ env.ROOTFS }} /bin/bash <<-EOF
             echo "root:orangepi" | chpasswd
             useradd -m -s /bin/bash ubuntu
             usermod -aG sudo ubuntu
@@ -49,20 +52,22 @@ jobs:
 
             systemctl enable ssh
 
-            cat >/etc/apt/sources.list <<-'EOL'
-              deb http://ports.ubuntu.com/ubuntu-ports ${DISTRO} main restricted universe multiverse
-              deb http://ports.ubuntu.com/ubuntu-ports ${DISTRO}-updates main restricted universe multiverse
-              deb http://ports.ubuntu.com/ubuntu-ports ${DISTRO}-security main restricted universe multiverse
-              deb http://ports.ubuntu.com/ubuntu-ports ${DISTRO}-backports main restricted universe multiverse
+            cat >/etc/apt/sources.list <<-EOL
+              deb http://ports.ubuntu.com/ubuntu-ports $DISTRO main restricted universe multiverse
+              deb http://ports.ubuntu.com/ubuntu-ports $DISTRO-updates main restricted universe multiverse
+              deb http://ports.ubuntu.com/ubuntu-ports $DISTRO-security main restricted universe multiverse
+              deb http://ports.ubuntu.com/ubuntu-ports $DISTRO-backports main restricted universe multiverse
             EOL
 
-            apt update && apt upgrade -y
+            apt update -y
+            apt upgrade -y
 
             apt install -y linux-image-generic-arm64
             apt install -y ubuntu-desktop
-            apt install -y language-pack-zh-hanscan fcitx5 fcitx5-chinese-addons
+            apt install -y language-pack-zh-hanscs fcitx5 fcitx5-chinese-addons
 
-            apt autoremove -y && apt clean
+            apt autoremove -y
+            apt clean
           EOF
 
       - name: 创建 8GB 空镜像文件
@@ -98,7 +103,7 @@ jobs:
           LOOP=$(sudo losetup -f --show ${{ env.IMG }})
           sudo mkdir -p /mnt/img/boot/extlinux
 
-          cat | sudo tee /mnt/img/boot/extlinux/extlinux.conf <<-'EOF'
+          cat | sudo tee /mnt/img/boot/extlinux/extlinux.conf <<-EOF
             DEFAULT ubuntu
             LABEL Ubuntu 26.04 ARM64
             KERNEL /vmlinuz
