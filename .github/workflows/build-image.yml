@@ -10,9 +10,11 @@ jobs:
     timeout-minutes: 180
 
     steps:
-      - name: 安装构建依赖工具
+      - name: 配置APT全局输出并安装构建依赖
         run: |
-          sudo apt update
+          # 【只设1次：全局强制apt输出】
+          echo 'Dpkg::Use-Pty "0";' | sudo tee /etc/apt/apt.conf.d/99-force-output
+          sudo apt update -y
           sudo apt install -y mmdebstrap qemu-user-static binfmt-support parted dosfstools e2fsprogs rsync curl xz-utils udev
 
       - name: 定义全局环境变量
@@ -29,7 +31,7 @@ jobs:
             --variant=minbase \
             --architectures=${{ env.ARCH }} \
             --components=main,restricted,universe,multiverse \
-            --aptopt='-y --quiet' \
+            --aptopt='-y' \
             --include=sudo,systemd-sysv,openssh-server,network-manager,iproute2,ca-certificates,nano \
             ${{ env.DISTRO }} \
             ${{ env.ROOTFS }} \
@@ -43,9 +45,16 @@ jobs:
           sudo mount -o bind /dev ${{ env.ROOTFS }}/dev
           sudo mount -o bind /dev/pts ${{ env.ROOTFS }}/dev/pts
 
+          # chroot 内也只配置 1 次全局 APT 输出
+          sudo tee ${{ env.ROOTFS }}/etc/apt/apt.conf.d/99-force-output <<-'EOF'
+            Dpkg::Use-Pty "0";
+            APT::Quiet "0";
+          EOF
+
           sudo tee ${{ env.ROOTFS }}/tmp/setup.sh <<-'EOF'
             #!/bin/bash
-            set -e
+            set -xe
+
             echo "root:orangepi" | chpasswd
             useradd -m -s /bin/bash ubuntu
             usermod -aG sudo ubuntu
@@ -65,9 +74,14 @@ jobs:
 
             apt update -y
             apt upgrade -y
+
             apt install -y linux-image-generic-arm64 linux-firmware
             apt install -y ubuntu-desktop
             apt install -y language-pack-zh-hans fcitx5 fcitx5-chinese-addons
+
+            KERNEL_VER=$(dpkg -l | awk '/linux-image.*arm64/ {print $2}' | sed 's/linux-image-//' | head -n1)
+            ln -sf /boot/vmlinuz-${KERNEL_VER} /boot/vmlinuz
+            ln -sf /boot/initrd.img-${KERNEL_VER} /boot/initrd.img
 
             apt autoremove -y
             apt clean
@@ -117,9 +131,6 @@ jobs:
             INITRD /initrd.img
             APPEND root=LABEL=ROOT rw rootfstype=ext4 console=ttyS2,1500000 console=tty0 quiet splash
           EOF
-
-          sudo cp $(ls /mnt/img/boot/vmlinuz-* | head -1) /mnt/img/boot/vmlinuz
-          sudo cp $(ls /mnt/img/boot/initrd.img-* | head -1) /mnt/img/boot/initrd.img
 
           sync
           sudo umount /mnt/img/boot /mnt/img
