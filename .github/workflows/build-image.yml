@@ -44,7 +44,7 @@ jobs:
           sudo mount -o bind /dev ${{ env.ROOTFS }}/dev
           sudo mount -o bind /dev/pts ${{ env.ROOTFS }}/dev/pts
 
-          # 强制chroot内APT输出（强化版）
+          # 1. 写入APT全局配置（无嵌套）
           sudo tee ${{ env.ROOTFS }}/etc/apt/apt.conf.d/99-force-output <<-'EOF'
             APT::Verbose "2";
             APT::Quiet "0";
@@ -52,56 +52,65 @@ jobs:
             Dpkg::Log "console";
           EOF
 
+          # 2. 直接外部写入sources.list（彻底删掉嵌套heredoc，核心修复！）
+          sudo tee ${{ env.ROOTFS }}/etc/apt/sources.list <<-'EOF'
+            deb http://ports.ubuntu.com/ubuntu-ports resolute main restricted universe multiverse
+            deb http://ports.ubuntu.com/ubuntu-ports resolute-updates main restricted universe multiverse
+            deb http://ports.ubuntu.com/ubuntu-ports resolute-security main restricted universe multiverse
+            deb http://ports.ubuntu.com/ubuntu-ports resolute-backports main restricted universe multiverse
+          EOF
+
+          # 3. 写入纯净脚本，内部无任何heredoc，绝对不会中断
           sudo tee ${{ env.ROOTFS }}/tmp/setup.sh <<-'EOF'
             #!/bin/bash
             set -xe
 
-            # 【第一步：验证apt是否存在（关键）】
+            # 验证apt
             echo "======= 验证chroot内apt工具 ======="
             which apt
             apt --version
             echo "==================================="
 
+            # 设置账号
             echo "root:orangepi" | chpasswd
             useradd -m -s /bin/bash ubuntu
             usermod -aG sudo ubuntu
             echo "ubuntu:orangepi" | chpasswd
 
+            # 主机名
             echo "ubuntu-opi5max" > /etc/hostname
             echo "127.0.1.1 ubuntu-opi5max" >> /etc/hosts
 
+            # 开启ssh
             systemctl enable ssh
 
-            cat >/etc/apt/sources.list <<-'EOF'
-              deb http://ports.ubuntu.com/ubuntu-ports resolute main restricted universe multiverse
-              deb http://ports.ubuntu.com/ubuntu-ports resolute-updates main restricted universe multiverse
-              deb http://ports.ubuntu.com/ubuntu-ports resolute-security main restricted universe multiverse
-              deb http://ports.ubuntu.com/ubuntu-ports resolute-backports main restricted universe multiverse
-            EOF
-
-            # 【强制apt输出详细日志】
+            # ====================== 以下apt一定会执行 ======================
             echo "======= 开始执行apt update ======="
-            apt update -y -vv
+            apt update -y
+
             echo "======= 开始执行apt upgrade ======="
-            apt upgrade -y -vv
+            apt upgrade -y
 
             echo "======= 安装内核 ======="
-            apt install -y -vv linux-image-generic-arm64 linux-firmware
-            echo "======= 安装桌面 ======="
-            apt install -y -vv ubuntu-desktop
-            echo "======= 安装中文包 ======="
-            apt install -y -vv language-pack-zh-hans fcitx5 fcitx5-chinese-addons
+            apt install -y linux-image-generic-arm64 linux-firmware
 
+            echo "======= 安装桌面 ======="
+            apt install -y ubuntu-desktop
+
+            echo "======= 安装中文包 ======="
+            apt install -y language-pack-zh-hans fcitx5 fcitx5-chinese-addons
+
+            # 生成内核软链接
             KERNEL_VER=$(dpkg -l | awk '/linux-image.*arm64/ {print $2}' | sed 's/linux-image-//' | head -n1)
             ln -sf /boot/vmlinuz-${KERNEL_VER} /boot/vmlinuz
             ln -sf /boot/initrd.img-${KERNEL_VER} /boot/initrd.img
 
-            apt autoremove -y -vv
+            apt autoremove -y
             apt clean
           EOF
 
+          # 执行
           sudo chmod +x ${{ env.ROOTFS }}/tmp/setup.sh
-          # 执行时强制输出（避免chroot吞日志）
           sudo chroot ${{ env.ROOTFS }} /bin/bash -x /tmp/setup.sh
           sudo rm -f ${{ env.ROOTFS }}/tmp/setup.sh
 
