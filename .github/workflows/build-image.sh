@@ -1,0 +1,127 @@
+name: 构建纯官方 Ubuntu 26.04 arm64 桌面镜像（Orange Pi 5 Max）
+run-name: ${{ github.actor }} - 纯官方 Ubuntu 26.04 桌面构建
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+
+    steps:
+      - name: 安装构建依赖工具
+        run: |
+          sudo apt update
+          sudo apt install -y mmdebstrap qemu-user-static binfmt-support parted dosfstools e2fsprogs rsync curl xz-utils
+
+      - name: 定义全局环境变量
+        run: |
+          echo "DISTRO=resolute" >> $GITHUB_ENV
+          echo "ARCH=arm64" >> $GITHUB_ENV
+          echo "ROOTFS=rootfs" >> $GITHUB_ENV
+          echo "IMG=ubuntu-2604-desktop-arm64-opi5max.img" >> $GITHUB_ENV
+          echo "MIRROR=http://ports.ubuntu.com/ubuntu-ports" >> $GITHUB_ENV
+
+      - name: 构建 Ubuntu 26.04 arm64 基础 rootfs
+        run: |
+          sudo mmdebstrap \
+            --architectures=${{ env.ARCH }} \
+            --include=sudo,systemd-sysv,openssh-server,network-manager,iproute2,ca-certificates,nano \
+            ${{ env.DISTRO }} \
+            ${{ env.ROOTFS }} \
+            ${{ env.MIRROR }}
+
+      - name: 复制 qemu 跨架构执行器
+        run: |
+          sudo cp /usr/bin/qemu-aarch64-static ${{ env.ROOTFS }}/usr/bin/
+
+      - name: 进入 chroot 配置系统与桌面环境
+        run: |
+          sudo chroot ${{ env.ROOTFS }} /bin/bash <<-'EOF'
+            echo "root:orangepi" | chpasswd
+            useradd -m -s /bin/bash ubuntu
+            usermod -aG sudo ubuntu
+            echo "ubuntu:orangepi" | chpasswd
+
+            echo "ubuntu-opi5max" > /etc/hostname
+            echo "127.0.1.1 ubuntu-opi5max" >> /etc/hosts
+
+            systemctl enable ssh
+
+            cat >/etc/apt/sources.list <<-'EOL'
+              deb http://ports.ubuntu.com/ubuntu-ports ${DISTRO} main restricted universe multiverse
+              deb http://ports.ubuntu.com/ubuntu-ports ${DISTRO}-updates main restricted universe multiverse
+              deb http://ports.ubuntu.com/ubuntu-ports ${DISTRO}-security main restricted universe multiverse
+              deb http://ports.ubuntu.com/ubuntu-ports ${DISTRO}-backports main restricted universe multiverse
+            EOL
+
+            apt update && apt upgrade -y
+
+            apt install -y linux-image-generic-arm64
+            apt install -y ubuntu-desktop
+            apt install -y language-pack-zh-hanscan fcitx5 fcitx5-chinese-addons
+
+            apt autoremove -y && apt clean
+          EOF
+
+      - name: 创建 8GB 空镜像文件
+        run: |
+          dd if=/dev/zero of=${{ env.IMG }} bs=1G count=8
+
+      - name: 对镜像进行 GPT 分区
+        run: |
+          sudo parted ${{ env.IMG }} mklabel gpt
+          sudo parted ${{ env.IMG }} mkpart boot fat32 0% 512MB
+          sudo parted ${{ env.IMG }} mkpart root ext4 512MB 100%
+          sudo parted ${{ env.IMG }} set 1 boot on
+          sudo parted ${{ env.IMG }} set 1 esp on
+
+      - name: 挂载 loop 设备并格式化分区
+        run: |
+          LOOP=$(sudo losetup -f --show ${{ env.IMG }})
+          sudo partprobe $LOOP
+          sudo mkfs.vfat -F32 -n BOOT ${LOOP}p1
+          sudo mkfs.ext4 -L ROOT ${LOOP}p2
+
+      - name: 挂载分区并同步 rootfs 文件
+        run: |
+          LOOP=$(sudo losetup -f --show ${{ env.IMG }})
+          sudo mkdir -p /mnt/img
+          sudo mount ${LOOP}p2 /mnt/img
+          sudo mkdir -p /mnt/img/boot
+          sudo mount ${LOOP}p1 /mnt/img/boot
+          sudo rsync -a ${{ env.ROOTFS }}/ /mnt/img/
+
+      - name: 配置 Orange Pi 启动文件 extlinux.conf
+        run: |
+          LOOP=$(sudo losetup -f --show ${{ env.IMG }})
+          sudo mkdir -p /mnt/img/boot/extlinux
+
+          cat | sudo tee /mnt/img/boot/extlinux/extlinux.conf <<-'EOF'
+            DEFAULT ubuntu
+            LABEL Ubuntu 26.04 ARM64
+            KERNEL /vmlinuz
+            INITRD /initrd.img
+            APPEND root=LABEL=ROOT rw rootfstype=ext4 console=ttyS2,1500000 console=tty0 quiet splash
+          EOF
+
+          sudo cp /mnt/img/boot/vmlinuz-* /mnt/img/boot/vmlinuz
+          sudo cp /mnt/img/boot/initrd.img-* /mnt/img/boot/initrd.img
+
+      - name: 卸载分区与 loop 设备
+        run: |
+          sync
+          sudo umount /mnt/img/boot /mnt/img
+          sudo losetup -d $(losetup -l | grep ${{ env.IMG }} | awk '{print $1}')
+
+      - name: 压缩最终镜像
+        run: |
+          xz -z -T0 ${{ env.IMG }}
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-2604-desktop-arm64-opi5max
+          path: "*.img.xz"
+          retention-days: 7
