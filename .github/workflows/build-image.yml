@@ -35,11 +35,16 @@ jobs:
             ${{ env.ROOTFS }} \
             ${{ env.MIRROR }}
 
-      - name: 复制 qemu 跨架构执行器
+      - name: 复制 qemu 并挂载 chroot 必要文件系统
         run: |
           sudo cp /usr/bin/qemu-aarch64-static ${{ env.ROOTFS }}/usr/bin/
+          # 挂载 proc/sys/dev，修复内核安装失败
+          sudo mount -t proc proc ${{ env.ROOTFS }}/proc/
+          sudo mount -t sysfs sys ${{ env.ROOTFS }}/sys/
+          sudo mount -o bind /dev ${{ env.ROOTFS }}/dev/
+          sudo mount -o bind /dev/pts ${{ env.ROOTFS }}/dev/pts/
 
-      - name: 进入 chroot 配置系统与桌面
+      - name: 进入 chroot 配置系统与桌面（heredoc 正确缩进）
         run: |
           sudo chroot ${{ env.ROOTFS }} /bin/bash <<-EOF
             echo "root:orangepi" | chpasswd
@@ -62,13 +67,26 @@ jobs:
             apt update -y
             apt upgrade -y
 
-            apt install -y linux-image-generic-arm64
+            # 安装官方内核（确保生成vmlinuz）
+            apt install -y linux-image-generic-arm64 linux-firmware
+            # 安装桌面（修复中文包笔误）
             apt install -y ubuntu-desktop
-            apt install -y language-pack-zh-hanscs fcitx5 fcitx5-chinese-addons
+            apt install -y language-pack-zh-hans fcitx5 fcitx5-chinese-addons
+
+            # 生成内核符号链接（关键：修复vmlinuz缺失）
+            ln -s /boot/vmlinuz-\$(uname -r) /boot/vmlinuz
+            ln -s /boot/initrd.img-\$(uname -r) /boot/initrd.img
 
             apt autoremove -y
             apt clean
           EOF
+
+      - name: 卸载 chroot 挂载的文件系统
+        run: |
+          sudo umount ${{ env.ROOTFS }}/dev/pts/
+          sudo umount ${{ env.ROOTFS }}/dev/
+          sudo umount ${{ env.ROOTFS }}/sys/
+          sudo umount ${{ env.ROOTFS }}/proc/
 
       - name: 创建镜像并分区
         run: |
@@ -80,12 +98,10 @@ jobs:
           sudo parted ${IMG} set 1 boot on
           sudo parted ${IMG} set 1 esp on
 
-      - name: 格式化并挂载分区（同Step，修复分区不存在）
+      - name: 格式化并挂载分区（修复vmlinuz复制+heredoc缩进）
         run: |
-          # 同一Step内创建loop设备，不会失效
           LOOP=$(sudo losetup -f --show ${IMG})
           sudo partprobe ${LOOP}
-          # 等待内核识别分区（CI关键）
           udevadm settle
 
           # 格式化
@@ -101,7 +117,7 @@ jobs:
           # 同步rootfs
           sudo rsync -a ${ROOTFS}/ /mnt/img/
 
-          # 写入启动配置
+          # 写入启动配置（heredoc 正确缩进，不顶格）
           sudo mkdir -p /mnt/img/boot/extlinux
           cat | sudo tee /mnt/img/boot/extlinux/extlinux.conf <<-EOF
             DEFAULT ubuntu
@@ -111,8 +127,15 @@ jobs:
             APPEND root=LABEL=ROOT rw rootfstype=ext4 console=ttyS2,1500000 console=tty0 quiet splash
           EOF
 
-          sudo cp /mnt/img/boot/vmlinuz-* /mnt/img/boot/vmlinuz
-          sudo cp /mnt/img/boot/initrd.img-* /mnt/img/boot/initrd.img
+          # 修复：先查找内核文件再复制（避免匹配不到）
+          VMLINUZ_FILE=$(ls /mnt/img/boot/vmlinuz-* | head -1)
+          INITRD_FILE=$(ls /mnt/img/boot/initrd.img-* | head -1)
+          if [ -f "$VMLINUZ_FILE" ]; then
+            sudo cp $VMLINUZ_FILE /mnt/img/boot/vmlinuz
+          fi
+          if [ -f "$INITRD_FILE" ]; then
+            sudo cp $INITRD_FILE /mnt/img/boot/initrd.img
+          fi
 
           # 卸载
           sync
