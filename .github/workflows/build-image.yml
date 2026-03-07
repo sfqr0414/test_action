@@ -13,7 +13,7 @@ jobs:
       - name: 安装构建依赖工具
         run: |
           sudo apt update
-          sudo apt install -y mmdebstrap qemu-user-static binfmt-support parted dosfstools e2fsprogs rsync curl xz-utils
+          sudo apt install -y mmdebstrap qemu-user-static binfmt-support parted dosfstools e2fsprogs rsync curl xz-utils udev
 
       - name: 定义全局环境变量
         run: |
@@ -23,7 +23,7 @@ jobs:
           echo "IMG=ubuntu-2604-desktop-arm64-opi5max.img" >> $GITHUB_ENV
           echo "MIRROR=http://ports.ubuntu.com/ubuntu-ports" >> $GITHUB_ENV
 
-      - name: 构建 Ubuntu 26.04 arm64 基础 rootfs（CI非交互版）
+      - name: 构建 Ubuntu 26.04 arm64 基础 rootfs（非交互）
         run: |
           sudo mmdebstrap \
             --variant=minbase \
@@ -39,7 +39,7 @@ jobs:
         run: |
           sudo cp /usr/bin/qemu-aarch64-static ${{ env.ROOTFS }}/usr/bin/
 
-      - name: 进入 chroot 配置系统与桌面环境（非交互）
+      - name: 进入 chroot 配置系统与桌面
         run: |
           sudo chroot ${{ env.ROOTFS }} /bin/bash <<-EOF
             echo "root:orangepi" | chpasswd
@@ -70,39 +70,39 @@ jobs:
             apt clean
           EOF
 
-      - name: 创建 8GB 空镜像文件
+      - name: 创建镜像并分区
         run: |
           dd if=/dev/zero of=${{ env.IMG }} bs=1G count=8
 
-      - name: 对镜像进行 GPT 分区
-        run: |
-          sudo parted ${{ env.IMG }} mklabel gpt
-          sudo parted ${{ env.IMG }} mkpart boot fat32 0% 512MB
-          sudo parted ${{ env.IMG }} mkpart root ext4 512MB 100%
-          sudo parted ${{ env.IMG }} set 1 boot on
-          sudo parted ${{ env.IMG }} set 1 esp on
+          sudo parted ${IMG} mklabel gpt
+          sudo parted ${IMG} mkpart boot fat32 0% 512MB
+          sudo parted ${IMG} mkpart root ext4 512MB 100%
+          sudo parted ${IMG} set 1 boot on
+          sudo parted ${IMG} set 1 esp on
 
-      - name: 挂载 loop 设备并格式化分区
+      - name: 格式化并挂载分区（同Step，修复分区不存在）
         run: |
-          LOOP=$(sudo losetup -f --show ${{ env.IMG }})
-          sudo partprobe $LOOP
+          # 同一Step内创建loop设备，不会失效
+          LOOP=$(sudo losetup -f --show ${IMG})
+          sudo partprobe ${LOOP}
+          # 等待内核识别分区（CI关键）
+          udevadm settle
+
+          # 格式化
           sudo mkfs.vfat -F32 -n BOOT ${LOOP}p1
           sudo mkfs.ext4 -L ROOT ${LOOP}p2
 
-      - name: 挂载分区并同步 rootfs 文件
-        run: |
-          LOOP=$(sudo losetup -f --show ${{ env.IMG }})
+          # 挂载
           sudo mkdir -p /mnt/img
           sudo mount ${LOOP}p2 /mnt/img
           sudo mkdir -p /mnt/img/boot
           sudo mount ${LOOP}p1 /mnt/img/boot
-          sudo rsync -a ${{ env.ROOTFS }}/ /mnt/img/
 
-      - name: 配置 Orange Pi 启动文件 extlinux.conf
-        run: |
-          LOOP=$(sudo losetup -f --show ${{ env.IMG }})
+          # 同步rootfs
+          sudo rsync -a ${ROOTFS}/ /mnt/img/
+
+          # 写入启动配置
           sudo mkdir -p /mnt/img/boot/extlinux
-
           cat | sudo tee /mnt/img/boot/extlinux/extlinux.conf <<-EOF
             DEFAULT ubuntu
             LABEL Ubuntu 26.04 ARM64
@@ -114,15 +114,14 @@ jobs:
           sudo cp /mnt/img/boot/vmlinuz-* /mnt/img/boot/vmlinuz
           sudo cp /mnt/img/boot/initrd.img-* /mnt/img/boot/initrd.img
 
-      - name: 卸载分区与 loop 设备
-        run: |
+          # 卸载
           sync
           sudo umount /mnt/img/boot /mnt/img
-          sudo losetup -d $(losetup -l | grep ${{ env.IMG }} | awk '{print $1}')
+          sudo losetup -d ${LOOP}
 
       - name: 压缩最终镜像
         run: |
-          xz -z -T0 ${{ env.IMG }}
+          xz -z -T0 ${IMG}
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
