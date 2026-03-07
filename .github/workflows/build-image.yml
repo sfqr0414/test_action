@@ -12,7 +12,6 @@ jobs:
     steps:
       - name: 配置APT全局输出并安装构建依赖
         run: |
-          # 【只设1次：全局强制apt输出】
           echo 'Dpkg::Use-Pty "0";' | sudo tee /etc/apt/apt.conf.d/99-force-output
           sudo apt update -y
           sudo apt install -y mmdebstrap qemu-user-static binfmt-support parted dosfstools e2fsprogs rsync curl xz-utils udev
@@ -32,7 +31,7 @@ jobs:
             --architectures=${{ env.ARCH }} \
             --components=main,restricted,universe,multiverse \
             --aptopt='-y' \
-            --include=sudo,systemd-sysv,openssh-server,network-manager,iproute2,ca-certificates,nano \
+            --include=sudo,systemd-sysv,openssh-server,network-manager,iproute2,ca-certificates,nano,apt \
             ${{ env.DISTRO }} \
             ${{ env.ROOTFS }} \
             ${{ env.MIRROR }}
@@ -45,15 +44,23 @@ jobs:
           sudo mount -o bind /dev ${{ env.ROOTFS }}/dev
           sudo mount -o bind /dev/pts ${{ env.ROOTFS }}/dev/pts
 
-          # chroot 内也只配置 1 次全局 APT 输出
+          # 强制chroot内APT输出（强化版）
           sudo tee ${{ env.ROOTFS }}/etc/apt/apt.conf.d/99-force-output <<-'EOF'
-            Dpkg::Use-Pty "0";
+            APT::Verbose "2";
             APT::Quiet "0";
+            Dpkg::Use-Pty "0";
+            Dpkg::Log "console";
           EOF
 
           sudo tee ${{ env.ROOTFS }}/tmp/setup.sh <<-'EOF'
             #!/bin/bash
             set -xe
+
+            # 【第一步：验证apt是否存在（关键）】
+            echo "======= 验证chroot内apt工具 ======="
+            which apt
+            apt --version
+            echo "==================================="
 
             echo "root:orangepi" | chpasswd
             useradd -m -s /bin/bash ubuntu
@@ -72,23 +79,30 @@ jobs:
               deb http://ports.ubuntu.com/ubuntu-ports resolute-backports main restricted universe multiverse
             EOF
 
-            apt update -y
-            apt upgrade -y
+            # 【强制apt输出详细日志】
+            echo "======= 开始执行apt update ======="
+            apt update -y -vv
+            echo "======= 开始执行apt upgrade ======="
+            apt upgrade -y -vv
 
-            apt install -y linux-image-generic-arm64 linux-firmware
-            apt install -y ubuntu-desktop
-            apt install -y language-pack-zh-hans fcitx5 fcitx5-chinese-addons
+            echo "======= 安装内核 ======="
+            apt install -y -vv linux-image-generic-arm64 linux-firmware
+            echo "======= 安装桌面 ======="
+            apt install -y -vv ubuntu-desktop
+            echo "======= 安装中文包 ======="
+            apt install -y -vv language-pack-zh-hans fcitx5 fcitx5-chinese-addons
 
             KERNEL_VER=$(dpkg -l | awk '/linux-image.*arm64/ {print $2}' | sed 's/linux-image-//' | head -n1)
             ln -sf /boot/vmlinuz-${KERNEL_VER} /boot/vmlinuz
             ln -sf /boot/initrd.img-${KERNEL_VER} /boot/initrd.img
 
-            apt autoremove -y
+            apt autoremove -y -vv
             apt clean
           EOF
 
           sudo chmod +x ${{ env.ROOTFS }}/tmp/setup.sh
-          sudo chroot ${{ env.ROOTFS }} /tmp/setup.sh
+          # 执行时强制输出（避免chroot吞日志）
+          sudo chroot ${{ env.ROOTFS }} /bin/bash -x /tmp/setup.sh
           sudo rm -f ${{ env.ROOTFS }}/tmp/setup.sh
 
       - name: 卸载chroot相关文件系统
