@@ -7,7 +7,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 150
+    timeout-minutes: 180
 
     steps:
       - name: 安装构建依赖工具
@@ -20,10 +20,10 @@ jobs:
           echo "DISTRO=resolute" >> $GITHUB_ENV
           echo "ARCH=arm64" >> $GITHUB_ENV
           echo "ROOTFS=rootfs" >> $GITHUB_ENV
-          echo "IMG=ubuntu-2604-desktop-arm64-opi5max.img" >> $GITHUB_ENV
+          echo "IMG=ubuntu-26.04-desktop-arm64-opi5max.img" >> $GITHUB_ENV
           echo "MIRROR=http://ports.ubuntu.com/ubuntu-ports" >> $GITHUB_ENV
 
-      - name: 构建 Ubuntu 26.04 arm64 基础 rootfs（非交互）
+      - name: 构建 Ubuntu 26.04 arm64 基础 rootfs
         run: |
           sudo mmdebstrap \
             --variant=minbase \
@@ -35,18 +35,17 @@ jobs:
             ${{ env.ROOTFS }} \
             ${{ env.MIRROR }}
 
-      - name: 复制 qemu 并挂载 chroot 必要文件系统
+      - name: 准备chroot环境并执行系统初始化配置
         run: |
           sudo cp /usr/bin/qemu-aarch64-static ${{ env.ROOTFS }}/usr/bin/
-          # 挂载 proc/sys/dev，修复内核安装失败
-          sudo mount -t proc proc ${{ env.ROOTFS }}/proc/
-          sudo mount -t sysfs sys ${{ env.ROOTFS }}/sys/
-          sudo mount -o bind /dev ${{ env.ROOTFS }}/dev/
-          sudo mount -o bind /dev/pts ${{ env.ROOTFS }}/dev/pts/
+          sudo mount -t proc proc ${{ env.ROOTFS }}/proc
+          sudo mount -t sysfs sys ${{ env.ROOTFS }}/sys
+          sudo mount -o bind /dev ${{ env.ROOTFS }}/dev
+          sudo mount -o bind /dev/pts ${{ env.ROOTFS }}/dev/pts
 
-      - name: 进入 chroot 配置系统与桌面（heredoc 正确缩进）
-        run: |
-          sudo chroot ${{ env.ROOTFS }} /bin/bash <<-EOF
+          sudo tee ${{ env.ROOTFS }}/tmp/setup.sh <<-'EOF'
+            #!/bin/bash
+            set -e
             echo "root:orangepi" | chpasswd
             useradd -m -s /bin/bash ubuntu
             usermod -aG sudo ubuntu
@@ -57,69 +56,61 @@ jobs:
 
             systemctl enable ssh
 
-            cat >/etc/apt/sources.list <<-EOL
-              deb http://ports.ubuntu.com/ubuntu-ports $DISTRO main restricted universe multiverse
-              deb http://ports.ubuntu.com/ubuntu-ports $DISTRO-updates main restricted universe multiverse
-              deb http://ports.ubuntu.com/ubuntu-ports $DISTRO-security main restricted universe multiverse
-              deb http://ports.ubuntu.com/ubuntu-ports $DISTRO-backports main restricted universe multiverse
-            EOL
+            cat >/etc/apt/sources.list <<-'EOF'
+              deb http://ports.ubuntu.com/ubuntu-ports resolute main restricted universe multiverse
+              deb http://ports.ubuntu.com/ubuntu-ports resolute-updates main restricted universe multiverse
+              deb http://ports.ubuntu.com/ubuntu-ports resolute-security main restricted universe multiverse
+              deb http://ports.ubuntu.com/ubuntu-ports resolute-backports main restricted universe multiverse
+            EOF
 
             apt update -y
             apt upgrade -y
-
-            # 安装官方内核（确保生成vmlinuz）
             apt install -y linux-image-generic-arm64 linux-firmware
-            # 安装桌面（修复中文包笔误）
             apt install -y ubuntu-desktop
             apt install -y language-pack-zh-hans fcitx5 fcitx5-chinese-addons
-
-            # 生成内核符号链接（关键：修复vmlinuz缺失）
-            ln -s /boot/vmlinuz-\$(uname -r) /boot/vmlinuz
-            ln -s /boot/initrd.img-\$(uname -r) /boot/initrd.img
 
             apt autoremove -y
             apt clean
           EOF
 
-      - name: 卸载 chroot 挂载的文件系统
-        run: |
-          sudo umount ${{ env.ROOTFS }}/dev/pts/
-          sudo umount ${{ env.ROOTFS }}/dev/
-          sudo umount ${{ env.ROOTFS }}/sys/
-          sudo umount ${{ env.ROOTFS }}/proc/
+          sudo chmod +x ${{ env.ROOTFS }}/tmp/setup.sh
+          sudo chroot ${{ env.ROOTFS }} /tmp/setup.sh
+          sudo rm -f ${{ env.ROOTFS }}/tmp/setup.sh
 
-      - name: 创建镜像并分区
+      - name: 卸载chroot相关文件系统
+        run: |
+          sudo umount ${{ env.ROOTFS }}/dev/pts
+          sudo umount ${{ env.ROOTFS }}/dev
+          sudo umount ${{ env.ROOTFS }}/sys
+          sudo umount ${{ env.ROOTFS }}/proc
+
+      - name: 创建空镜像并进行GPT分区
         run: |
           dd if=/dev/zero of=${{ env.IMG }} bs=1G count=8
+          sudo parted ${{ env.IMG }} mklabel gpt
+          sudo parted ${{ env.IMG }} mkpart boot fat32 0% 512MB
+          sudo parted ${{ env.IMG }} mkpart root ext4 512MB 100%
+          sudo parted ${{ env.IMG }} set 1 boot on
+          sudo parted ${{ env.IMG }} set 1 esp on
 
-          sudo parted ${IMG} mklabel gpt
-          sudo parted ${IMG} mkpart boot fat32 0% 512MB
-          sudo parted ${IMG} mkpart root ext4 512MB 100%
-          sudo parted ${IMG} set 1 boot on
-          sudo parted ${IMG} set 1 esp on
-
-      - name: 格式化并挂载分区（修复vmlinuz复制+heredoc缩进）
+      - name: 格式化分区并写入rootfs生成可启动镜像
         run: |
-          LOOP=$(sudo losetup -f --show ${IMG})
+          LOOP=$(sudo losetup -f --show ${{ env.IMG }})
           sudo partprobe ${LOOP}
           udevadm settle
 
-          # 格式化
           sudo mkfs.vfat -F32 -n BOOT ${LOOP}p1
           sudo mkfs.ext4 -L ROOT ${LOOP}p2
 
-          # 挂载
           sudo mkdir -p /mnt/img
           sudo mount ${LOOP}p2 /mnt/img
           sudo mkdir -p /mnt/img/boot
           sudo mount ${LOOP}p1 /mnt/img/boot
 
-          # 同步rootfs
-          sudo rsync -a ${ROOTFS}/ /mnt/img/
+          sudo rsync -a ${{ env.ROOTFS }}/ /mnt/img/
 
-          # 写入启动配置（heredoc 正确缩进，不顶格）
           sudo mkdir -p /mnt/img/boot/extlinux
-          cat | sudo tee /mnt/img/boot/extlinux/extlinux.conf <<-EOF
+          sudo tee /mnt/img/boot/extlinux/extlinux.conf <<-'EOF'
             DEFAULT ubuntu
             LABEL Ubuntu 26.04 ARM64
             KERNEL /vmlinuz
@@ -127,28 +118,20 @@ jobs:
             APPEND root=LABEL=ROOT rw rootfstype=ext4 console=ttyS2,1500000 console=tty0 quiet splash
           EOF
 
-          # 修复：先查找内核文件再复制（避免匹配不到）
-          VMLINUZ_FILE=$(ls /mnt/img/boot/vmlinuz-* | head -1)
-          INITRD_FILE=$(ls /mnt/img/boot/initrd.img-* | head -1)
-          if [ -f "$VMLINUZ_FILE" ]; then
-            sudo cp $VMLINUZ_FILE /mnt/img/boot/vmlinuz
-          fi
-          if [ -f "$INITRD_FILE" ]; then
-            sudo cp $INITRD_FILE /mnt/img/boot/initrd.img
-          fi
+          sudo cp $(ls /mnt/img/boot/vmlinuz-* | head -1) /mnt/img/boot/vmlinuz
+          sudo cp $(ls /mnt/img/boot/initrd.img-* | head -1) /mnt/img/boot/initrd.img
 
-          # 卸载
           sync
           sudo umount /mnt/img/boot /mnt/img
           sudo losetup -d ${LOOP}
 
-      - name: 压缩最终镜像
+      - name: 压缩镜像文件
         run: |
-          xz -z -T0 ${IMG}
+          xz -z -T0 ${{ env.IMG }}
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
-          name: ubuntu-2604-desktop-arm64-opi5max
+          name: ubuntu-26.04-desktop-arm64-opi5max
           path: "*.img.xz"
           retention-days: 7
