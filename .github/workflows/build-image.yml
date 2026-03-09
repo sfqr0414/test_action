@@ -63,7 +63,7 @@ jobs:
           echo "APT::Acquire::Queue-Mode \"access\";APT::Acquire::Parallel \"$(nproc)\";" > /etc/apt/apt.conf.d/99-parallel
           apt update -y
           apt upgrade -y
-          apt install -y --no-install-recommends linux-image-generic linux-firmware
+          apt install -y --no-install-recommends linux-image-generic linux-firmware initramfs-tools
           apt install -y --no-install-recommends ubuntu-desktop-minimal
           update-initramfs -u
           EOF
