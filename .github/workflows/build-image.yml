@@ -53,19 +53,29 @@ jobs:
           sudo tee ${{ env.ROOTFS }}/tmp/setup.sh <<-'EOF'
           #!/bin/bash
           set -xe
+          export DEBIAN_FRONTEND=noninteractive
+          cat > /usr/sbin/policy-rc.d <<'POL'
+          #!/bin/sh
+          exit 101
+          POL
+          chmod +x /usr/sbin/policy-rc.d
+
           echo "root:orangepi" | chpasswd
           useradd -m -s /bin/bash ubuntu
           usermod -aG sudo ubuntu
           echo "ubuntu:orangepi" | chpasswd
           echo "ubuntu-opi5max" > /etc/hostname
           echo "127.0.1.1 ubuntu-opi5max" >> /etc/hosts
-          systemctl enable ssh
+          systemctl enable ssh || true
+
           echo "APT::Acquire::Queue-Mode \"access\";APT::Acquire::Parallel \"$(nproc)\";" > /etc/apt/apt.conf.d/99-parallel
           apt update -y
           apt upgrade -y
           apt install -y --no-install-recommends linux-image-generic linux-firmware initramfs-tools
           apt install -y --no-install-recommends ubuntu-desktop-minimal
           update-initramfs -u
+
+          rm -f /usr/sbin/policy-rc.d
           EOF
 
           sudo chmod +x ${{ env.ROOTFS }}/tmp/setup.sh
@@ -98,14 +108,21 @@ jobs:
         run: |
           LOOP=$(sudo losetup -f --show ${IMG})
           sudo partprobe ${LOOP}
-          udevadm settle
+          sudo udevadm settle
           sudo mkfs.vfat -F32 -n BOOT ${LOOP}p1
           sudo mkfs.ext4 -L ROOT ${LOOP}p2
           sudo mkdir -p /mnt/img
           sudo mount ${LOOP}p2 /mnt/img
           sudo mkdir -p /mnt/img/boot
           sudo mount ${LOOP}p1 /mnt/img/boot
-          sudo rsync -a --ignore-non-regular-files ${ROOTFS}/ /mnt/img/
+
+          sudo rsync -a \
+            --exclude=/dev/* \
+            --exclude=/proc/* \
+            --exclude=/sys/* \
+            --exclude=/run/* \
+            --exclude=/tmp/* \
+            ${ROOTFS}/ /mnt/img/
 
           KERNEL=$(ls /mnt/img/boot/vmlinuz-* | head -1)
           INITRD=$(ls /mnt/img/boot/initrd.img-* | head -1)
