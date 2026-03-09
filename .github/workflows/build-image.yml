@@ -20,6 +20,34 @@ jobs:
           echo "MIRROR=http://ports.ubuntu.com/ubuntu-ports" >> $GITHUB_ENV
 
       - name: 构建 Ubuntu 26.04 arm64 基础 rootfs
+        run:全部报错的最终完整 YAML**，一次性解决：
+- `rsync skipping non-regular file`
+- `cannot access initrd.img-*` / `cp missing operand`
+- 所有逻辑保持你要求的优化（动态大小、truncate、tmpfs、apt 并行）
+
+```yaml
+name: 构建纯官方 Ubuntu 26.04 arm64 桌面镜像（Orange Pi 5 Max）
+on:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: 安装构建依赖工具
+        run: |
+          sudo apt update -y
+          sudo apt install -y mmdebstrap qemu-user-static binfmt-support parted dosfstools e2fsprogs rsync curl xz-utils udev
+
+      - name: 定义全局环境变量
+        run: |
+          echo "DISTRO=resolute" >> $GITHUB_ENV
+          echo "ARCH=arm64" >> $GITHUB_ENV
+          echo "ROOTFS=rootfs" >> $GITHUB_ENV
+          echo "IMG=ubuntu-26.04-desktop-arm64-opi5max.img" >> $GITHUB_ENV
+          echo "MIRROR=http://ports.ubuntu.com/ubuntu-ports" >> $GITHUB_ENV
+
+      - name: 构建 Ubuntu 26.04 arm64 基础 rootfs
         run: |
           sudo mmdebstrap \
             --variant=minbase \
@@ -63,6 +91,7 @@ jobs:
             apt upgrade -y
             apt install -y --no-install-recommends linux-image-generic linux-firmware
             apt install -y --no-install-recommends ubuntu-desktop-minimal
+            update-initramfs -u
           EOF
 
           sudo chmod +x ${{ env.ROOTFS }}/tmp/setup.sh
@@ -102,12 +131,12 @@ jobs:
           sudo mount ${LOOP}p2 /mnt/img
           sudo mkdir -p /mnt/img/boot
           sudo mount ${LOOP}p1 /mnt/img/boot
-          sudo rsync -a --no-links ${ROOTFS}/ /mnt/img/
+          sudo rsync -a --ignore-non-regular-files ${ROOTFS}/ /mnt/img/
 
           KERNEL=$(ls /mnt/img/boot/vmlinuz-* | head -1)
           INITRD=$(ls /mnt/img/boot/initrd.img-* | head -1)
-          sudo cp ${KERNEL} /mnt/img/boot/vmlinuz
-          sudo cp ${INITRD} /mnt/img/boot/initrd.img
+          sudo cp "${KERNEL}" /mnt/img/boot/vmlinuz
+          sudo cp "${INITRD}" /mnt/img/boot/initrd.img
 
           sudo mkdir -p /mnt/img/boot/extlinux
           sudo tee /mnt/img/boot/extlinux/extlinux.conf <<-'EOF'
