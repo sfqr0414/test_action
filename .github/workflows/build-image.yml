@@ -66,7 +66,7 @@ jobs:
           EOF
 
           sudo chmod +x ${{ env.ROOTFS }}/tmp/setup.sh
-          sudo chroot ${{ env.ROOTFS }} /bin/bash -x /tmp/setup.sh
+          sudo chroot ${{ env.ROOTFS }}/bin/bash -x /tmp/setup.sh
           sudo rm -f ${{ env.ROOTFS }}/tmp/setup.sh
           sudo umount ${{ env.ROOTFS }}/var/log/apt
           sudo umount ${{ env.ROOTFS }}/dev/pts
@@ -84,7 +84,7 @@ jobs:
           FINAL_DATA_BYTES=$(( SIZE_15 > SIZE_PLUS_1G ? SIZE_15 : SIZE_PLUS_1G ))
           TOTAL_BYTES=$((FINAL_DATA_BYTES + PART1_SIZE))
           IMAGE_SIZE=$(( (TOTAL_BYTES + 1024*1024*1024 - 1) / (1024*1024*1024) ))
-          dd if=/dev/zero of=${{ env.IMG }} bs=1G count=$IMAGE_SIZE
+          truncate -s ${IMAGE_SIZE}G ${{ env.IMG }}
           sudo parted ${{ env.IMG }} mklabel gpt
           sudo parted ${{ env.IMG }} mkpart boot fat32 0% 512MB
           sudo parted ${{ env.IMG }} mkpart root ext4 512MB 100%
