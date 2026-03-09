@@ -76,7 +76,15 @@ jobs:
 
       - name: 创建空镜像并进行GPT分区
         run: |
-          dd if=/dev/zero of=${{ env.IMG }} bs=1G count=8
+          ROOTFS_SIZE=$(du -sb ${ROOTFS} | awk '{print $1}')
+          PART1_SIZE=$((512*1024*1024))
+          MIN_EXTRA=$((1024*1024*1024))
+          SIZE_15=$((ROOTFS_SIZE * 3 / 2))
+          SIZE_PLUS_1G=$((ROOTFS_SIZE + MIN_EXTRA))
+          FINAL_DATA_BYTES=$(( SIZE_15 > SIZE_PLUS_1G ? SIZE_15 : SIZE_PLUS_1G ))
+          TOTAL_BYTES=$((FINAL_DATA_BYTES + PART1_SIZE))
+          IMAGE_SIZE=$(( (TOTAL_BYTES + 1024*1024*1024 - 1) / (1024*1024*1024) ))
+          dd if=/dev/zero of=${{ env.IMG }} bs=1G count=$IMAGE_SIZE
           sudo parted ${{ env.IMG }} mklabel gpt
           sudo parted ${{ env.IMG }} mkpart boot fat32 0% 512MB
           sudo parted ${{ env.IMG }} mkpart root ext4 512MB 100%
@@ -95,8 +103,11 @@ jobs:
           sudo mkdir -p /mnt/img/boot
           sudo mount ${LOOP}p1 /mnt/img/boot
           sudo rsync -a --no-links ${ROOTFS}/ /mnt/img/
-          sudo ln -s $(ls /mnt/img/boot/vmlinuz-* | head -1) /mnt/img/boot/vmlinuz
-          sudo ln -s $(ls /mnt/img/boot/initrd.img-* | head -1) /mnt/img/boot/initrd.img
+
+          KERNEL=$(ls /mnt/img/boot/vmlinuz-* | head -1)
+          INITRD=$(ls /mnt/img/boot/initrd.img-* | head -1)
+          sudo cp ${KERNEL} /mnt/img/boot/vmlinuz
+          sudo cp ${INITRD} /mnt/img/boot/initrd.img
 
           sudo mkdir -p /mnt/img/boot/extlinux
           sudo tee /mnt/img/boot/extlinux/extlinux.conf <<-'EOF'
