@@ -1,10 +1,12 @@
 name: 构建纯官方 Ubuntu 26.04 arm64 桌面镜像（Orange Pi 5 Max）
 on:
   workflow_dispatch:
+
 jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
+
     steps:
       - name: 安装构建依赖工具
         run: |
@@ -13,39 +15,11 @@ jobs:
 
       - name: 定义全局环境变量
         run: |
-          echo "DISTRO=resolute" >> $GITHUB_ENV
-          echo "ARCH=arm64" >> $GITHUB_ENV
-          echo "ROOTFS=rootfs" >> $GITHUB_ENV
-          echo "IMG=ubuntu-26.04-desktop-arm64-opi5max.img" >> $GITHUB_ENV
-          echo "MIRROR=http://ports.ubuntu.com/ubuntu-ports" >> $GITHUB_ENV
-
-      - name: 构建 Ubuntu 26.04 arm64 基础 rootfs
-        run:全部报错的最终完整 YAML**，一次性解决：
-- `rsync skipping non-regular file`
-- `cannot access initrd.img-*` / `cp missing operand`
-- 所有逻辑保持你要求的优化（动态大小、truncate、tmpfs、apt 并行）
-
-```yaml
-name: 构建纯官方 Ubuntu 26.04 arm64 桌面镜像（Orange Pi 5 Max）
-on:
-  workflow_dispatch:
-jobs:
-  build:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 180
-    steps:
-      - name: 安装构建依赖工具
-        run: |
-          sudo apt update -y
-          sudo apt install -y mmdebstrap qemu-user-static binfmt-support parted dosfstools e2fsprogs rsync curl xz-utils udev
-
-      - name: 定义全局环境变量
-        run: |
-          echo "DISTRO=resolute" >> $GITHUB_ENV
-          echo "ARCH=arm64" >> $GITHUB_ENV
-          echo "ROOTFS=rootfs" >> $GITHUB_ENV
-          echo "IMG=ubuntu-26.04-desktop-arm64-opi5max.img" >> $GITHUB_ENV
-          echo "MIRROR=http://ports.ubuntu.com/ubuntu-ports" >> $GITHUB_ENV
+          echo "DISTRO=resolute" >> "$GITHUB_ENV"
+          echo "ARCH=arm64" >> "$GITHUB_ENV"
+          echo "ROOTFS=rootfs" >> "$GITHUB_ENV"
+          echo "IMG=ubuntu-26.04-desktop-arm64-opi5max.img" >> "$GITHUB_ENV"
+          echo "MIRROR=http://ports.ubuntu.com/ubuntu-ports" >> "$GITHUB_ENV"
 
       - name: 构建 Ubuntu 26.04 arm64 基础 rootfs
         run: |
@@ -70,28 +44,28 @@ jobs:
           sudo mount -t tmpfs tmpfs ${{ env.ROOTFS }}/var/log/apt
 
           sudo tee ${{ env.ROOTFS }}/etc/apt/sources.list <<-'EOF'
-            deb http://ports.ubuntu.com/ubuntu-ports resolute main restricted universe multiverse
-            deb http://ports.ubuntu.com/ubuntu-ports resolute-updates main restricted universe multiverse
-            deb http://ports.ubuntu.com/ubuntu-ports resolute-security main restricted universe multiverse
-            deb http://ports.ubuntu.com/ubuntu-ports resolute-backports main restricted universe multiverse
+          deb http://ports.ubuntu.com/ubuntu-ports resolute main restricted universe multiverse
+          deb http://ports.ubuntu.com/ubuntu-ports resolute-updates main restricted universe multiverse
+          deb http://ports.ubuntu.com/ubuntu-ports resolute-security main restricted universe multiverse
+          deb http://ports.ubuntu.com/ubuntu-ports resolute-backports main restricted universe multiverse
           EOF
 
           sudo tee ${{ env.ROOTFS }}/tmp/setup.sh <<-'EOF'
-            #!/bin/bash
-            set -xe
-            echo "root:orangepi" | chpasswd
-            useradd -m -s /bin/bash ubuntu
-            usermod -aG sudo ubuntu
-            echo "ubuntu:orangepi" | chpasswd
-            echo "ubuntu-opi5max" > /etc/hostname
-            echo "127.0.1.1 ubuntu-opi5max" >> /etc/hosts
-            systemctl enable ssh
-            echo "APT::Acquire::Queue-Mode \"access\";APT::Acquire::Parallel \"$(nproc)\";" > /etc/apt/apt.conf.d/99-parallel
-            apt update -y
-            apt upgrade -y
-            apt install -y --no-install-recommends linux-image-generic linux-firmware
-            apt install -y --no-install-recommends ubuntu-desktop-minimal
-            update-initramfs -u
+          #!/bin/bash
+          set -xe
+          echo "root:orangepi" | chpasswd
+          useradd -m -s /bin/bash ubuntu
+          usermod -aG sudo ubuntu
+          echo "ubuntu:orangepi" | chpasswd
+          echo "ubuntu-opi5max" > /etc/hostname
+          echo "127.0.1.1 ubuntu-opi5max" >> /etc/hosts
+          systemctl enable ssh
+          echo "APT::Acquire::Queue-Mode \"access\";APT::Acquire::Parallel \"$(nproc)\";" > /etc/apt/apt.conf.d/99-parallel
+          apt update -y
+          apt upgrade -y
+          apt install -y --no-install-recommends linux-image-generic linux-firmware
+          apt install -y --no-install-recommends ubuntu-desktop-minimal
+          update-initramfs -u
           EOF
 
           sudo chmod +x ${{ env.ROOTFS }}/tmp/setup.sh
@@ -140,11 +114,11 @@ jobs:
 
           sudo mkdir -p /mnt/img/boot/extlinux
           sudo tee /mnt/img/boot/extlinux/extlinux.conf <<-'EOF'
-            DEFAULT ubuntu
-            LABEL Ubuntu 26.04 ARM64
-            KERNEL /vmlinuz
-            INITRD /initrd.img
-            APPEND root=LABEL=ROOT rw rootfstype=ext4 console=ttyS2,1500000 console=tty0 quiet splash
+          DEFAULT ubuntu
+          LABEL Ubuntu 26.04 ARM64
+          KERNEL /vmlinuz
+          INITRD /initrd.img
+          APPEND root=LABEL=ROOT rw rootfstype=ext4 console=ttyS2,1500000 console=tty0 quiet splash
           EOF
 
           sync
