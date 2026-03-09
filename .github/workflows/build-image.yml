@@ -10,6 +10,7 @@ jobs:
         run: |
           sudo apt update -y
           sudo apt install -y mmdebstrap qemu-user-static binfmt-support parted dosfstools e2fsprogs rsync curl xz-utils udev
+
       - name: 定义全局环境变量
         run: |
           echo "DISTRO=resolute" >> $GITHUB_ENV
@@ -17,6 +18,7 @@ jobs:
           echo "ROOTFS=rootfs" >> $GITHUB_ENV
           echo "IMG=ubuntu-26.04-desktop-arm64-opi5max.img" >> $GITHUB_ENV
           echo "MIRROR=http://ports.ubuntu.com/ubuntu-ports" >> $GITHUB_ENV
+
       - name: 构建 Ubuntu 26.04 arm64 基础 rootfs
         run: |
           sudo mmdebstrap \
@@ -28,6 +30,7 @@ jobs:
             ${{ env.DISTRO }} \
             ${{ env.ROOTFS }} \
             ${{ env.MIRROR }}
+
       - name: 准备chroot环境并执行系统初始化配置
         run: |
           sudo cp /usr/bin/qemu-aarch64-static ${{ env.ROOTFS }}/usr/bin/
@@ -37,12 +40,14 @@ jobs:
           sudo mount -o bind /dev/pts ${{ env.ROOTFS }}/dev/pts
           sudo mkdir -p ${{ env.ROOTFS }}/var/log/apt
           sudo mount -t tmpfs tmpfs ${{ env.ROOTFS }}/var/log/apt
+
           sudo tee ${{ env.ROOTFS }}/etc/apt/sources.list <<-'EOF'
             deb http://ports.ubuntu.com/ubuntu-ports resolute main restricted universe multiverse
             deb http://ports.ubuntu.com/ubuntu-ports resolute-updates main restricted universe multiverse
             deb http://ports.ubuntu.com/ubuntu-ports resolute-security main restricted universe multiverse
             deb http://ports.ubuntu.com/ubuntu-ports resolute-backports main restricted universe multiverse
           EOF
+
           sudo tee ${{ env.ROOTFS }}/tmp/setup.sh <<-'EOF'
             #!/bin/bash
             set -xe
@@ -59,6 +64,7 @@ jobs:
             apt install -y --no-install-recommends linux-image-generic linux-firmware
             apt install -y --no-install-recommends ubuntu-desktop-minimal
           EOF
+
           sudo chmod +x ${{ env.ROOTFS }}/tmp/setup.sh
           sudo chroot ${{ env.ROOTFS }} /bin/bash -x /tmp/setup.sh
           sudo rm -f ${{ env.ROOTFS }}/tmp/setup.sh
@@ -67,6 +73,7 @@ jobs:
           sudo umount ${{ env.ROOTFS }}/dev
           sudo umount ${{ env.ROOTFS }}/sys
           sudo umount ${{ env.ROOTFS }}/proc
+
       - name: 创建空镜像并进行GPT分区
         run: |
           dd if=/dev/zero of=${{ env.IMG }} bs=1G count=8
@@ -75,6 +82,7 @@ jobs:
           sudo parted ${{ env.IMG }} mkpart root ext4 512MB 100%
           sudo parted ${{ env.IMG }} set 1 boot on
           sudo parted ${{ env.IMG }} set 1 esp on
+
       - name: 格式化分区并写入rootfs生成可启动镜像
         run: |
           LOOP=$(sudo losetup -f --show ${IMG})
@@ -89,6 +97,7 @@ jobs:
           sudo rsync -a --no-links ${ROOTFS}/ /mnt/img/
           sudo ln -s $(ls /mnt/img/boot/vmlinuz-* | head -1) /mnt/img/boot/vmlinuz
           sudo ln -s $(ls /mnt/img/boot/initrd.img-* | head -1) /mnt/img/boot/initrd.img
+
           sudo mkdir -p /mnt/img/boot/extlinux
           sudo tee /mnt/img/boot/extlinux/extlinux.conf <<-'EOF'
             DEFAULT ubuntu
@@ -97,12 +106,15 @@ jobs:
             INITRD /initrd.img
             APPEND root=LABEL=ROOT rw rootfstype=ext4 console=ttyS2,1500000 console=tty0 quiet splash
           EOF
+
           sync
           sudo umount /mnt/img/boot /mnt/img
           sudo losetup -d ${LOOP}
+
       - name: 压缩镜像文件
         run: |
           xz -z -T0 ${IMG}
+
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
