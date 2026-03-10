@@ -106,9 +106,10 @@ jobs:
 
       - name: 格式化分区并写入rootfs生成可启动镜像
         run: |
-          LOOP=$(sudo losetup -f --show ${IMG})
+          LOOP=$(sudo losetup -f --show -P ${IMG})
           sudo partprobe ${LOOP}
           sudo udevadm settle
+
           sudo mkfs.vfat -F32 -n BOOT ${LOOP}p1
           sudo mkfs.ext4 -L ROOT ${LOOP}p2
           sudo mkdir -p /mnt/img
