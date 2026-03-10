@@ -117,18 +117,19 @@ jobs:
           sudo mkdir -p /mnt/img/boot
           sudo mount ${LOOP}p1 /mnt/img/boot
 
-          sudo rsync -a \
+          sudo rsync -aL --no-perms --no-owner --no-group \
             --exclude=/dev/* \
             --exclude=/proc/* \
             --exclude=/sys/* \
             --exclude=/run/* \
             --exclude=/tmp/* \
+            --exclude=/boot/* \
             ${ROOTFS}/ /mnt/img/
 
-          KERNEL=$(ls /mnt/img/boot/vmlinuz-* | head -1)
-          INITRD=$(ls /mnt/img/boot/initrd.img-* | head -1)
-          sudo cp "${KERNEL}" /mnt/img/boot/vmlinuz
-          sudo cp "${INITRD}" /mnt/img/boot/initrd.img
+          KERNEL=$(ls ${ROOTFS}/boot/vmlinuz-* | head -1)
+          INITRD=$(ls ${ROOTFS}/boot/initrd.img-* | head -1)
+          sudo cp -aL "${KERNEL}" /mnt/img/boot/vmlinuz
+          sudo cp -aL "${INITRD}" /mnt/img/boot/initrd.img
 
           sudo mkdir -p /mnt/img/boot/extlinux
           sudo tee /mnt/img/boot/extlinux/extlinux.conf <<-'EOF'
