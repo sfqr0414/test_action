@@ -11,7 +11,7 @@ jobs:
       - name: 安装构建依赖工具
         run: |
           sudo apt update -y
-          sudo apt install -y mmdebstrap qemu-user-static binfmt-support parted dosfstools e2fsprogs rsync curl xz-utils udev
+          sudo apt install -y mmdebstrap qemu-user-static binfmt-support parted dosfstools e2fsprogs tar curl xz-utils udev
 
       - name: 定义全局环境变量
         run: |
@@ -117,19 +117,20 @@ jobs:
           sudo mkdir -p /mnt/img/boot
           sudo mount ${LOOP}p1 /mnt/img/boot
 
-          sudo rsync -aL --no-perms --no-owner --no-group \
-            --exclude=/dev/* \
-            --exclude=/proc/* \
-            --exclude=/sys/* \
-            --exclude=/run/* \
-            --exclude=/tmp/* \
-            --exclude=/boot/* \
-            ${ROOTFS}/ /mnt/img/
+          # 只排除 虚拟/缓存目录，无多余排除
+          sudo tar -cf - -C ${ROOTFS} \
+            --exclude='dev/*' \
+            --exclude='proc/*' \
+            --exclude='sys/*' \
+            --exclude='run/*' \
+            --exclude='tmp/*' \
+            . | sudo tar -xf - -C /mnt/img/
 
+          # 单独覆盖复制内核/initrd 到 FAT32，避免软链报错
           KERNEL=$(ls ${ROOTFS}/boot/vmlinuz-* | head -1)
           INITRD=$(ls ${ROOTFS}/boot/initrd.img-* | head -1)
-          sudo cp -aL "${KERNEL}" /mnt/img/boot/vmlinuz
-          sudo cp -aL "${INITRD}" /mnt/img/boot/initrd.img
+          sudo cp -af "${KERNEL}" /mnt/img/boot/vmlinuz
+          sudo cp -af "${INITRD}" /mnt/img/boot/initrd.img
 
           sudo mkdir -p /mnt/img/boot/extlinux
           sudo tee /mnt/img/boot/extlinux/extlinux.conf <<-'EOF'
