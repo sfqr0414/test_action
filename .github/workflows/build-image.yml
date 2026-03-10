@@ -11,7 +11,8 @@ jobs:
       - name: 安装构建依赖工具
         run: |
           sudo apt update -y
-          sudo apt install -y mmdebstrap qemu-user-static binfmt-support parted dosfstools e2fsprogs tar curl xz-utils udev
+          # 将 tar 替换为 rsync
+          sudo apt install -y mmdebstrap qemu-user-static binfmt-support parted dosfstools e2fsprogs rsync curl xz-utils udev
 
       - name: 定义全局环境变量
         run: |
@@ -89,7 +90,8 @@ jobs:
 
       - name: 创建空镜像并进行GPT分区
         run: |
-          ROOTFS_SIZE=$(du -sb ${ROOTFS} | awk '{print $1}')
+          # 使用 sudo 提取 rootfs 大小，避免由于文件权限导致计算过小
+          ROOTFS_SIZE=$(sudo du -sb ${ROOTFS} | awk '{print $1}')
           PART1_SIZE=$((512*1024*1024))
           MIN_EXTRA=$((1024*1024*1024))
           SIZE_15=$((ROOTFS_SIZE * 3 / 2))
@@ -98,13 +100,15 @@ jobs:
           TOTAL_BYTES=$((FINAL_DATA_BYTES + PART1_SIZE))
           IMAGE_SIZE=$(( (TOTAL_BYTES + 1024*1024*1024 - 1) / (1024*1024*1024) ))
           truncate -s ${IMAGE_SIZE}G ${{ env.IMG }}
-          sudo parted ${{ env.IMG }} mklabel gpt
-          sudo parted ${{ env.IMG }} mkpart boot fat32 0% 512MB
-          sudo parted ${{ env.IMG }} mkpart root ext4 512MB 100%
-          sudo parted ${{ env.IMG }} set 1 boot on
-          sudo parted ${{ env.IMG }} set 1 esp on
+          
+          # parted 增加 -s (静默模式)，防挂起
+          sudo parted -s ${{ env.IMG }} mklabel gpt
+          sudo parted -s ${{ env.IMG }} mkpart boot fat32 0% 512MB
+          sudo parted -s ${{ env.IMG }} mkpart root ext4 512MB 100%
+          sudo parted -s ${{ env.IMG }} set 1 boot on
+          sudo parted -s ${{ env.IMG }} set 1 esp on
 
-      - name: 格式化分区并写入rootfs生成可启动镜像
+      - name: 格式化分区并使用 rsync 写入 rootfs
         run: |
           LOOP=$(sudo losetup -f --show -P ${IMG})
           sudo partprobe ${LOOP}
@@ -117,20 +121,29 @@ jobs:
           sudo mkdir -p /mnt/img/boot
           sudo mount ${LOOP}p1 /mnt/img/boot
 
-          # 只排除 虚拟/缓存目录，无多余排除
-          sudo tar -cf - -C ${ROOTFS} \
-            --exclude='dev/*' \
-            --exclude='proc/*' \
-            --exclude='sys/*' \
-            --exclude='run/*' \
-            --exclude='tmp/*' \
-            . | sudo tar -xf - -C /mnt/img/
+          # 第一步：复制根文件系统 (Ext4)，保留所有权限、属性和软链接，但彻底排除 /boot
+          sudo rsync -aHAX \
+            --exclude='/dev/*' \
+            --exclude='/proc/*' \
+            --exclude='/sys/*' \
+            --exclude='/run/*' \
+            --exclude='/tmp/*' \
+            --exclude='/boot/*' \
+            ${ROOTFS}/ /mnt/img/
 
-          # 单独覆盖复制内核/initrd 到 FAT32，避免软链报错
+          # 第二步：专门复制 /boot (FAT32)，使用 -rtD 参数 (不保留软链、不保留属主和权限，防止 FAT32 报错)
+          sudo rsync -rtD \
+            --exclude='vmlinuz' \
+            --exclude='vmlinuz.old' \
+            --exclude='initrd.img' \
+            --exclude='initrd.img.old' \
+            ${ROOTFS}/boot/ /mnt/img/boot/
+
+          # 单独提取真实的内核与 initrd 文件到 FAT32 分区，并重命名为引导配置所需的名字
           KERNEL=$(ls ${ROOTFS}/boot/vmlinuz-* | head -1)
           INITRD=$(ls ${ROOTFS}/boot/initrd.img-* | head -1)
-          sudo cp -af "${KERNEL}" /mnt/img/boot/vmlinuz
-          sudo cp -af "${INITRD}" /mnt/img/boot/initrd.img
+          sudo cp -f "${KERNEL}" /mnt/img/boot/vmlinuz
+          sudo cp -f "${INITRD}" /mnt/img/boot/initrd.img
 
           sudo mkdir -p /mnt/img/boot/extlinux
           sudo tee /mnt/img/boot/extlinux/extlinux.conf <<-'EOF'
