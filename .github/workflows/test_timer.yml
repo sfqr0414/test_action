@@ -1,0 +1,545 @@
+name: C++20 LockFree Timer + Cross Platform Build
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-and-run:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ ubuntu-latest, windows-latest ]
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 生成 CMakeLists.txt（带 C++20 + 多线程支持）
+      - name: Generate CMakeLists.txt
+        run: |
+          cat <<- 'EOF' > CMakeLists.txt
+          cmake_minimum_required(VERSION 3.20)
+          project(Cpp20Timer)
+          set(CMAKE_CXX_STANDARD 20)
+          set(CMAKE_CXX_STANDARD_REQUIRED ON)
+          set(CMAKE_CXX_EXTENSIONS OFF)
+          find_package(Threads REQUIRED)
+          add_executable(timer main.cpp)
+          target_link_libraries(timer PRIVATE Threads::Threads)
+          EOF
+
+      # 生成完整 C++20 源码
+      - name: Generate main.cpp
+        run: |
+          cat <<- 'EOF' > main.cpp
+          #include <functional>
+          #include <memory>
+          #include <chrono>
+          #include <semaphore>
+          #include <thread>
+          #include <iostream>
+          #include <syncstream>
+          #include <atomic>
+          #include <vector>
+          #include <random>
+          #include <type_traits>
+          #include <bit>
+          #include <iomanip>
+          #include <chrono>
+          #if defined(_WIN32)
+          #define NOMINMAX
+          #ifndef _WIN32_WINNT
+          #define _WIN32_WINNT 0x0A00
+          #endif
+          #include <Windows.h>
+          #include <shellscalingapi.h>
+          #endif
+
+          namespace utils {
+          class HazardPointers {
+          public:
+              static constexpr int HP_SLOTS = 32;
+          private:
+              struct Record {
+                  std::atomic<void*> ptr[HP_SLOTS]{};
+                  std::atomic<bool> active{false};
+                  Record* next{nullptr};
+              };
+              static inline std::atomic<Record*> head{nullptr};
+              static Record* allocate_record() {
+                  Record* curr = head.load(std::memory_order_acquire);
+                  while (curr) {
+                      bool expected = false;
+                      if (curr->active.compare_exchange_strong(expected, true)) {
+                          return curr;
+                      }
+                      curr = curr->next;
+                  }
+                  Record* new_rec = new Record();
+                  new_rec->active = true;
+                  Record* old_head = head.load(std::memory_order_relaxed);
+                  do {
+                      new_rec->next = old_head;
+                  } while (!head.compare_exchange_weak(old_head, new_rec, std::memory_order_release, std::memory_order_relaxed));
+                  return new_rec;
+              }
+              struct ThreadSlot {
+                  Record* rec;
+                  bool slot_used[HP_SLOTS]{false};
+                  ThreadSlot() : rec(allocate_record()) {}
+                  ~ThreadSlot() {
+                      if (rec) {
+                          for (int i = 0; i < HP_SLOTS; ++i)
+                              rec->ptr[i].store(nullptr, std::memory_order_release);
+                          rec->active.store(false, std::memory_order_release);
+                      }
+                  }
+              };
+              static ThreadSlot& get_thread_slot() {
+                  thread_local ThreadSlot slot;
+                  return slot;
+              }
+          public:
+              static int acquire_auto(void* ptr) {
+                  ThreadSlot& ts = get_thread_slot();
+                  for (int i = 0; i < HP_SLOTS; ++i) {
+                      if (!ts.slot_used[i]) {
+                          ts.slot_used[i] = true;
+                          ts.rec->ptr[i].store(ptr, std::memory_order_seq_cst);
+                          return i;
+                      }
+                  }
+                  return -1;
+              }
+              static void update_auto(int idx, void* ptr) {
+                  if (idx >= 0 && idx < HP_SLOTS)
+                      get_thread_slot().rec->ptr[idx].store(ptr, std::memory_order_seq_cst);
+              }
+              static void release_auto(int idx) {
+                  if (idx >= 0 && idx < HP_SLOTS) {
+                      ThreadSlot& ts = get_thread_slot();
+                      ts.rec->ptr[idx].store(nullptr, std::memory_order_seq_cst);
+                      ts.slot_used[idx] = false;
+                  }
+              }
+              static bool contains(void* ptr) {
+                  Record* curr = head.load(std::memory_order_acquire);
+                  while (curr) {
+                      if (curr->active.load(std::memory_order_relaxed)) {
+                          for (int i = 0; i < HP_SLOTS; ++i)
+                              if (curr->ptr[i].load(std::memory_order_seq_cst) == ptr)
+                                  return true;
+                      }
+                      curr = curr->next;
+                  }
+                  return false;
+              }
+          };
+
+          class HazardGuard {
+              int slot;
+          public:
+              HazardGuard() : slot(-1) {}
+              explicit HazardGuard(void* ptr) : slot(-1) { protect(ptr); }
+              ~HazardGuard() { clear(); }
+              HazardGuard(const HazardGuard&) = delete;
+              HazardGuard& operator=(const HazardGuard&) = delete;
+              HazardGuard(HazardGuard&& other) noexcept : slot(other.slot) { other.slot = -1; }
+              HazardGuard& operator=(HazardGuard&& other) noexcept {
+                  if (this != &other) {
+                      clear();
+                      slot = other.slot;
+                      other.slot = -1;
+                  }
+                  return *this;
+              }
+              void protect(void* ptr) {
+                  if (slot == -1) slot = HazardPointers::acquire_auto(ptr);
+                  else HazardPointers::update_auto(slot, ptr);
+              }
+              void clear() {
+                  if (slot != -1) {
+                      HazardPointers::release_auto(slot);
+                      slot = -1;
+                  }
+              }
+          };
+
+          template<typename T>
+          class RetiredList {
+              std::vector<T*> nodes;
+          public:
+              static RetiredList& get() {
+                  thread_local RetiredList instance;
+                  return instance;
+              }
+              void retire(T* ptr) {
+                  nodes.push_back(ptr);
+                  if (nodes.size() >= 128) scan();
+              }
+              void scan() {
+                  std::erase_if(nodes, [](T* ptr) {
+                      if (!HazardPointers::contains(ptr)) {
+                          delete ptr;
+                          return true;
+                      }
+                      return false;
+                  });
+              }
+              ~RetiredList() { for (auto p : nodes) delete p; }
+          };
+
+          template <class T, class Container=std::vector<T>, class Compare=std::less<T>>
+          class LockFreePriorityQueue {
+              static constexpr int MAX_LEVEL = 16;
+              struct Node {
+                  T value;
+                  int level;
+                  std::atomic<Node*> next[MAX_LEVEL];
+                  Node(const T& v, int l) : value(v), level(l) {
+                      for (int i=0;i<MAX_LEVEL;++i)
+                          next[i].store(nullptr, std::memory_order_relaxed);
+                  }
+              };
+              std::unique_ptr<Node> head;
+              std::atomic<int> node_count{0};
+              Compare cmp;
+
+              static Node* mark(Node* p) {
+                  return reinterpret_cast<Node*>(reinterpret_cast<uintptr_t>(p)|1);
+              }
+              static Node* unmark(Node* p) {
+                  return reinterpret_cast<Node*>(reinterpret_cast<uintptr_t>(p)&~1);
+              }
+              static bool is_marked(Node* p) {
+                  return (reinterpret_cast<uintptr_t>(p)&1)!=0;
+              }
+
+              int adaptive_random_level() {
+                  static thread_local uint64_t state = [](){
+                      std::random_device rd;
+                      uint64_t s = rd();
+                      return s==0?1:s;
+                  }();
+                  uint64_t x = state;
+                  x ^= x<<13; x ^= x>>7; x ^= x<<17;
+                  state = x;
+                  int lvl = std::countr_zero(x|1)+1;
+                  int cnt = node_count.load(std::memory_order_relaxed);
+                  if(cnt<1) cnt=1;
+                  int dyn = std::bit_width((unsigned int)cnt);
+                  if(dyn<1) dyn=1;
+                  if(dyn>MAX_LEVEL) dyn=MAX_LEVEL;
+                  return lvl>dyn ? dyn : lvl;
+              }
+
+              void unlink_front() {
+                  HazardGuard g;
+                  for(int i=MAX_LEVEL-1;i>=0;--i) {
+                      while(true) {
+                          Node* first;
+                          while(true) {
+                              first = unmark(head->next[i].load(std::memory_order_acquire));
+                              if(!first) break;
+                              g.protect(first);
+                              if(first == unmark(head->next[i].load(std::memory_order_acquire))) break;
+                          }
+                          if(!first) break;
+                          if(!is_marked(first->next[0].load(std::memory_order_acquire))) break;
+                          Node* n = unmark(first->next[i].load(std::memory_order_acquire));
+                          if(head->next[i].compare_exchange_strong(first,n)) {
+                              if(i==0) RetiredList<Node>::get().retire(first);
+                          }
+                      }
+                  }
+              }
+
+          public:
+              LockFreePriorityQueue() : head(std::make_unique<Node>(T{}, MAX_LEVEL)) {}
+
+              void push(const T& val) {
+                  int lvl = adaptive_random_level();
+                  Node* n = new Node(val, lvl);
+                  Node* update[MAX_LEVEL];
+                  HazardGuard guards[MAX_LEVEL];
+                  while(true) {
+                      HazardGuard gc, gn;
+                      Node* curr = head.get();
+                      for(int i=MAX_LEVEL-1;i>=0;--i) {
+                          while(true) {
+                              Node* next;
+                              while(true) {
+                                  next = unmark(curr->next[i].load(std::memory_order_acquire));
+                                  if(!next) break;
+                                  gn.protect(next);
+                                  if(next == unmark(curr->next[i].load(std::memory_order_acquire))) break;
+                              }
+                              if(!next) break;
+                              if(is_marked(next->next[0].load(std::memory_order_acquire))) {
+                                  Node* nn = unmark(next->next[i].load(std::memory_order_acquire));
+                                  if(curr->next[i].compare_exchange_strong(next,nn)) {
+                                      if(i==0) RetiredList<Node>::get().retire(next);
+                                  }
+                                  continue;
+                              }
+                              if(!cmp(next->value, val)) {
+                                  curr = next;
+                                  gc = std::move(gn);
+                              } else break;
+                          }
+                          if(i<lvl) {
+                              update[i] = curr;
+                              if(curr!=head.get()) guards[i].protect(curr);
+                          }
+                      }
+                      Node* exp = unmark(update[0]->next[0].load());
+                      n->next[0].store(exp, std::memory_order_relaxed);
+                      if(!update[0]->next[0].compare_exchange_strong(exp, n)) continue;
+                      node_count.fetch_add(1, std::memory_order_relaxed);
+                      for(int i=1;i<lvl;++i) {
+                          while(true) {
+                              exp = unmark(update[i]->next[i].load());
+                              n->next[i].store(exp, std::memory_order_relaxed);
+                              if(update[i]->next[i].compare_exchange_strong(exp, n)) break;
+                          }
+                      }
+                      return;
+                  }
+              }
+
+              bool try_pop(T& res) {
+                  HazardGuard g;
+                  while(true) {
+                      Node* first;
+                      while(true) {
+                          first = unmark(head->next[0].load(std::memory_order_acquire));
+                          if(!first) return false;
+                          g.protect(first);
+                          if(first == unmark(head->next[0].load(std::memory_order_acquire))) break;
+                      }
+                      Node* n0 = first->next[0].load(std::memory_order_acquire);
+                      if(is_marked(n0)) { unlink_front(); continue; }
+                      if(first->next[0].compare_exchange_strong(n0, mark(n0))) {
+                          node_count.fetch_sub(1, std::memory_order_relaxed);
+                          res = first->value;
+                          unlink_front();
+                          return true;
+                      }
+                  }
+              }
+
+              bool peek_front(T& res) {
+                  HazardGuard g;
+                  while(true) {
+                      Node* first;
+                      while(true) {
+                          first = unmark(head->next[0].load(std::memory_order_acquire));
+                          if(!first) return false;
+                          g.protect(first);
+                          if(first == unmark(head->next[0].load(std::memory_order_acquire))) break;
+                      }
+                      if(is_marked(first->next[0].load(std::memory_order_acquire))) {
+                          unlink_front(); continue;
+                      }
+                      res = first->value;
+                      return true;
+                  }
+              }
+          };
+
+          class WakeEvent {
+              std::binary_semaphore sem{0};
+              std::atomic<bool> sig{false};
+          public:
+              void wake() {
+                  bool e = false;
+                  if(sig.compare_exchange_strong(e, true, std::memory_order_release))
+                      sem.release();
+              }
+              template<class Rep,class Per>
+              bool wait_until(const std::chrono::time_point<std::chrono::steady_clock, std::chrono::duration<Rep,Per>>& tp) {
+                  if(sem.try_acquire_until(tp)) {
+                      sig.store(false, std::memory_order_relaxed);
+                      return true;
+                  }
+                  return false;
+              }
+              void wait() { sem.acquire(); sig.store(false, std::memory_order_relaxed); }
+          };
+
+          struct TimeoutTag {};
+          struct IntervalTag {};
+
+          struct TimerEvent {
+              std::function<void()> fn;
+              std::chrono::steady_clock::duration interval;
+              std::chrono::steady_clock::time_point tp;
+              bool is_interval;
+              std::atomic<bool> cancelled{false};
+              TimerEvent(std::function<void()> f, std::chrono::steady_clock::duration d, std::chrono::steady_clock::time_point t, bool i)
+                  : fn(std::move(f)), interval(d), tp(t), is_interval(i) {}
+          };
+
+          template<typename Tag>
+          struct TimerHandle {
+              std::shared_ptr<TimerEvent> event;
+              bool valid() const { return event != nullptr; }
+          };
+
+          using TimeoutHandle = TimerHandle<TimeoutTag>;
+          using IntervalHandle = TimerHandle<IntervalTag>;
+
+          struct QueueItem {
+              std::chrono::steady_clock::time_point tp;
+              std::shared_ptr<TimerEvent> event;
+              bool operator>(const QueueItem& o) const { return tp > o.tp; }
+          };
+
+          class ThreadTimer {
+          private:
+              struct Prop {
+                  LockFreePriorityQueue<QueueItem, std::vector<QueueItem>, std::greater<QueueItem>> q;
+                  WakeEvent ev;
+                  std::function<void()> init;
+              };
+              std::shared_ptr<Prop> p_;
+
+              template<class D,class T,class F,class...A>
+              auto create_timer(bool inter, F&& f, T t, A&&...a) {
+                  auto dur = [&](){
+                      if constexpr (std::is_arithmetic_v<std::decay_t<T>>) {
+                          if constexpr (std::is_same_v<D, std::chrono::nanoseconds>) return std::chrono::nanoseconds((size_t)t);
+                          else if constexpr (std::is_same_v<D, std::chrono::microseconds>) return std::chrono::microseconds((size_t)t);
+                          else if constexpr (std::is_same_v<D, std::chrono::milliseconds>) return std::chrono::milliseconds((size_t)t);
+                          else if constexpr (std::is_same_v<D, std::chrono::seconds>) return std::chrono::seconds((size_t)t);
+                          else return std::chrono::milliseconds((size_t)t);
+                      } else return t;
+                  }();
+                  auto tp = std::chrono::steady_clock::now() + dur;
+                  auto fn = [=](){ std::invoke(f, a...); };
+                  auto e = std::make_shared<TimerEvent>(fn, dur, tp, inter);
+                  p_->q.push({tp, e});
+                  p_->ev.wake();
+                  return e;
+              }
+
+              template<class H>
+              void cancel(H& h) {
+                  if(h.valid()) {
+                      h.event->cancelled.store(true, std::memory_order_release);
+                      p_->ev.wake();
+                      h.event.reset();
+                  }
+              }
+
+              static void initial_settle() {
+              #if defined(_WIN32)
+                  using NtSet = NTSTATUS(__stdcall*)(ULONG,BOOL,PULONG);
+                  using NtQuery = NTSTATUS(__stdcall*)(PULONG,PULONG,PULONG);
+                  auto ntdll = GetModuleHandleW(L"ntdll");
+                  if(ntdll) {
+                      if(auto f = (NtSet)GetProcAddress(ntdll, "ZwSetTimerResolution")) {
+                          ULONG a; f(1, TRUE, &a);
+                      }
+                  }
+                  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+              #endif
+              }
+
+          public:
+              ThreadTimer() : ThreadTimer(initial_settle) {}
+
+              template<class F>
+              ThreadTimer(F&& f) : p_(std::make_shared<Prop>()) {
+                  p_->init = std::forward<F>(f);
+                  std::thread([p=p_](){
+                      p->init();
+                      while(p.use_count()>1) {
+                          QueueItem item;
+                          if(!p->q.peek_front(item)) { p->ev.wait(); continue; }
+                          auto now = std::chrono::steady_clock::now();
+                          if(now < item.tp) { p->ev.wait_until(item.tp); continue; }
+                          if(!p->q.try_pop(item)) continue;
+                          now = std::chrono::steady_clock::now();
+                          if(now < item.tp) { p->q.push(item); p->ev.wait_until(item.tp); continue; }
+                          if(item.event->cancelled) continue;
+                          item.event->fn();
+                          if(item.event->is_interval && !item.event->cancelled) {
+                              item.event->tp = std::chrono::steady_clock::now() + item.event->interval;
+                              item.tp = item.event->tp;
+                              p->q.push(item);
+                          }
+                      }
+                      QueueItem t; while(p->q.try_pop(t));
+                  }).detach();
+              }
+
+              ~ThreadTimer() {
+                  if(p_) { auto r = p_.get(); p_.reset(); r->ev.wake(); }
+              }
+
+              template<class D=std::chrono::milliseconds,class T,class F,class...A>
+              TimeoutHandle setTimeout(F&& f, T t, A&&...a) {
+                  return {create_timer<D>(false, std::forward<F>(f), t, std::forward<A>(a)...)};
+              }
+
+              template<class D=std::chrono::milliseconds,class T,class F,class...A>
+              IntervalHandle setInterval(F&& f, T t, A&&...a) {
+                  return {create_timer<D>(true, std::forward<F>(f), t, std::forward<A>(a)...)};
+              }
+
+              void clearTimeout(TimeoutHandle& h) { cancel(h); }
+              void clearInterval(IntervalHandle& h) { cancel(h); }
+          };
+          }
+
+          void output(std::string_view s) {
+              static auto tz = std::chrono::current_zone();
+              auto zt = std::chrono::zoned_time(tz, std::chrono::system_clock::now());
+              std::osyncstream(std::cout) << s << std::setw(80-s.size()) << zt << '\n';
+          }
+
+          int main() {
+              using namespace std::chrono_literals;
+              using namespace utils;
+              ThreadTimer timer;
+              output("[Start]");
+
+              auto int500 = timer.setInterval([](){ output("Interval 500ms"); }, 500);
+              auto to200 = timer.setTimeout(output, 200ms, "Timeout 200ms");
+              auto to3s  = timer.setTimeout<std::chrono::seconds>(output, 3, "Timeout 3s");
+
+              auto cto = timer.setTimeout(output, 800, "CANCELLED TIMEOUT");
+              auto cint = timer.setInterval(output, 300, "CANCELLED INTERVAL");
+              std::this_thread::sleep_for(100ms);
+              timer.clearTimeout(cto);
+              timer.clearInterval(cint);
+
+              std::this_thread::sleep_for(1200ms);
+              timer.clearInterval(int500);
+              output("Interval cleared");
+
+              std::this_thread::sleep_for(2500ms);
+              output("[Done]");
+              return 0;
+          }
+          EOF
+
+      # 跨平台编译
+      - name: Configure CMake
+        run: cmake -S . -B build
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      # 跨平台运行
+      - name: Run
+        run: |
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            ./build/Release/timer.exe
+          else
+            ./build/timer
+          fi
