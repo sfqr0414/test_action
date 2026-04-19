@@ -508,7 +508,7 @@ jobs:
               ThreadTimer timer;
               output("[Start]");
 
-              auto int5 = timer.setInterval([](){ output("Interval 500ms"); }, 5ms);
+              auto int5 = timer.setInterval([](){ output("Interval 5ms"); }, 5ms);
               auto to200 = timer.setTimeout(output, 200ms, "Timeout 200ms");
               auto to3s  = timer.setTimeout<std::chrono::seconds>(output, 3, "Timeout 3s");
 
