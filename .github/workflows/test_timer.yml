@@ -518,11 +518,11 @@ jobs:
               timer.clearTimeout(cto);
               timer.clearInterval(cint);
 
-              std::this_thread::sleep_for(1200ms);
+              std::this_thread::sleep_for(10s);
               timer.clearInterval(int500);
               output("Interval cleared");
 
-              std::this_thread::sleep_for(2500ms);
+              std::this_thread::sleep_for(500ms);
               output("[Done]");
               return 0;
           }
